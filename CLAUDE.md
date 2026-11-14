@@ -104,7 +104,7 @@ The `adb` binary is used only to start the server if it is not running. Look for
 
 ### Concurrency and reliability
 
-- `AdbSyncClient` is an `actor`. Keep a small pool of sync connections per device: 1 for listing, plus up to 2 for transfers.
+- `AdbSyncClient` is an `actor`. Keep a small pool of sync connections per device: 1 for listing, plus up to 2 for transfers, plus 1 interactive connection for Quick Look and thumbnails (`docs/decisions/ADR-001-interactive-connection.md`).
 - Every operation takes a timeout (default 10 s for listing, no total timeout for transfers but an inactivity timeout of 15 s).
 - On device disconnect: cancel its operations, mark its transfers as failed with a retry option, and keep the UI responsive.
 - Support cancellation through Swift `Task` cancellation.

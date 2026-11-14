@@ -8,7 +8,7 @@ The authoritative project layout and constraints are in [CLAUDE.md](../CLAUDE.md
 | Target | Kind | Purpose | May import |
 |--------|------|---------|------------|
 | `AdbKit` | library | ADB protocol client (host, sync, shell) | Foundation, Network, os — **never SwiftUI/AppKit** |
-| `AdbFiles` | executable | The macOS app | AdbKit, SwiftUI, AppKit, QuickLook |
+| `AdbFiles` | executable | The macOS app | AdbKit, SwiftUI, AppKit, Quartz (QLPreviewPanel), ImageIO, CryptoKit |
 | `AdbKitTests` | tests (Swift Testing) | Protocol tests without a device; fake ADB server; live suites behind env vars | AdbKit, Testing |
 | `AdbFilesTests` | tests (Swift Testing) | App logic via `@testable import AdbFiles` (stores, sorting, cache) with scripted fakes | AdbFiles, AdbKit, Testing |
 

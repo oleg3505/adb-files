@@ -18,6 +18,9 @@ public actor AdbSyncClient {
     private var tail: Task<Void, Never>?
     /// At most two transfer connections per device, independent of the listing connection.
     private let transferLimiter = AsyncLimiter(limit: 2)
+    /// One interactive connection per device for Quick Look and thumbnails (ADR-001), so they never wait behind
+    /// transfers; previews ask with `.high` priority so they go before queued thumbnail reads.
+    private let interactiveLimiter = AsyncLimiter(limit: 1)
     private var sessions: [UUID: AdbTransferSession] = [:]
 
     /// - Parameters:
@@ -56,6 +59,23 @@ public actor AdbSyncClient {
         let features = try await supportedFeatures()
         try await transferLimiter.acquire()
         let limiter = transferLimiter
+        let token = UUID()
+        let session = AdbTransferSession(serial: serial, host: host, features: features, inactivity: inactivity) { [weak self] in
+            await limiter.release()
+            await self?.forget(token)
+        }
+        sessions[token] = session
+        return session
+    }
+
+    /// Waits for the interactive slot (one per device, separate from transfers) and returns a session that owns it.
+    /// - Parameter priority: `.high` for user-initiated previews, `.normal` for background thumbnail reads.
+    public func openInteractiveSession(
+        priority: InteractivePriority = .normal, inactivity: Duration = .seconds(15)
+    ) async throws -> AdbTransferSession {
+        let features = try await supportedFeatures()
+        try await interactiveLimiter.acquire(priority: priority == .high ? .high : .normal)
+        let limiter = interactiveLimiter
         let token = UUID()
         let session = AdbTransferSession(serial: serial, host: host, features: features, inactivity: inactivity) { [weak self] in
             await limiter.release()
@@ -205,4 +225,12 @@ public actor AdbSyncClient {
             task.cancel()
         }
     }
+}
+
+/// Order in which interactive work gets the device connection.
+public enum InteractivePriority: Sendable {
+    /// Background work such as thumbnail reads.
+    case normal
+    /// User-initiated work such as a Quick Look download; goes before queued `.normal` work.
+    case high
 }

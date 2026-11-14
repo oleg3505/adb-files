@@ -1,8 +1,14 @@
-/// Lets at most `limit` holders proceed at once; others wait in FIFO order. Cancellation-aware.
+/// Lets at most `limit` holders proceed at once; others wait — `.high` before `.normal`, FIFO within a priority.
+/// Cancellation-aware.
 actor AsyncLimiter {
+    /// Waiting order: `.high` waiters (e.g. a Quick Look download) go before `.normal` ones (thumbnail reads).
+    enum Priority: Sendable {
+        case normal, high
+    }
+
     private let limit: Int
     private var active = 0
-    private var waiters: [(id: Int, continuation: CheckedContinuation<Void, Error>)] = []
+    private var waiters: [(id: Int, priority: Priority, continuation: CheckedContinuation<Void, Error>)] = []
     private var nextID = 0
 
     init(limit: Int) {
@@ -10,7 +16,7 @@ actor AsyncLimiter {
     }
 
     /// Waits for a slot. Throws `CancellationError` if the task is cancelled while waiting.
-    func acquire() async throws {
+    func acquire(priority: Priority = .normal) async throws {
         if active < limit, waiters.isEmpty {
             active += 1
             return
@@ -21,8 +27,10 @@ actor AsyncLimiter {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 if Task.isCancelled {
                     continuation.resume(throwing: CancellationError())
+                } else if priority == .high, let firstNormal = waiters.firstIndex(where: { $0.priority == .normal }) {
+                    waiters.insert((id, priority, continuation), at: firstNormal)
                 } else {
-                    waiters.append((id, continuation))
+                    waiters.append((id, priority, continuation))
                 }
             }
         } onCancel: {

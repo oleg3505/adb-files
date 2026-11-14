@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import ImageIO
 import Testing
 @testable import AdbKit
 
@@ -69,5 +70,18 @@ struct LiveDeviceTests {
         #expect(data.count == 26_283_508)
         #expect(deviceSum.hasPrefix(localSum))
         #expect(elapsed < .seconds(5), "26 MB took \(elapsed); expected ≥ 5 MB/s even in debug")
+    }
+
+    @Test func cameraJpegThumbnailFromA64KBPrefix() async throws {
+        let entries = try await client.list("/sdcard/DCIM/Camera")
+        let jpeg = try #require(entries.first { $0.name.lowercased().hasSuffix(".jpg") && $0.size > 200_000 })
+        let session = try await client.openInteractiveSession()
+        let prefix = try await session.readPrefix(jpeg.path, maxBytes: 65_536)
+        await session.close()
+        #expect(prefix.count == 65_536)
+        let source = try #require(CGImageSourceCreateWithData(prefix as CFData, nil))
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageIfAbsent: false, kCGImageSourceThumbnailMaxPixelSize: 160]
+        let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        #expect(thumbnail != nil, "embedded EXIF thumbnail in the first 64 KB of \(jpeg.name)")
     }
 }

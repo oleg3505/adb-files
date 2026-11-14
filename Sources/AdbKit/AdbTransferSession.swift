@@ -131,6 +131,32 @@ public actor AdbTransferSession {
         }
     }
 
+    /// Reads at most `maxBytes` from the start of a remote file (e.g. the EXIF thumbnail of a JPEG lives in the
+    /// first few KB). The transfer can't be aborted mid-stream, so the connection is closed afterwards and the next
+    /// call reopens it.
+    public func readPrefix(_ remotePath: String, maxBytes: Int) async throws -> Data {
+        let (data, aborted) = try await run { connection -> (Data, Bool) in
+            try await connection.sendRaw(try SyncProtocol.encodeRequest(.recv, path: remotePath), timeout: self.inactivity)
+            var decoder = SyncRecvDecoder()
+            var collected = Data()
+            while true {
+                while let item = try decoder.next() {
+                    switch item {
+                    case .data(let chunk):
+                        collected.append(chunk)
+                        if collected.count >= maxBytes { return (collected.prefix(maxBytes), true) }
+                    case .done:
+                        return (collected, false)
+                    }
+                }
+                try Task.checkCancellation()
+                decoder.append(try await connection.readAvailable(timeout: self.inactivity))
+            }
+        }
+        if aborted { await abortConnection() }
+        return data
+    }
+
     /// Stats a remote path (no symlink follow), e.g. to check whether an upload target exists.
     public func lstat(_ path: String) async throws -> SyncStat {
         try await run { connection in

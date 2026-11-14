@@ -352,4 +352,68 @@ struct AdbSyncTransferTests {
         await gate.open()
         await session.close()
     }
+
+    @Test func readPrefixReturnsExactlyNBytesAndTheSessionStillWorks() async throws {
+        let device = FakeDevice(files: ["/big.jpg": payload(1_000_000), "/small.txt": payload(100)], recvChunk: 8_192)
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let session = try await client.openInteractiveSession()
+        let prefix = try await session.readPrefix("/big.jpg", maxBytes: 65_536)
+        #expect(prefix == payload(1_000_000).prefix(65_536))
+        let whole = try await session.readPrefix("/small.txt", maxBytes: 65_536)
+        #expect(whole == payload(100), "a prefix larger than the file returns the whole file")
+        await session.close()
+    }
+
+    @Test func interactiveSessionIsIndependentOfTransferSlots() async throws {
+        let gate = TestGate()
+        let device = FakeDevice(files: ["/a": payload(50_000), "/b": payload(50_000), "/c": payload(10)],
+                                recvChunk: 10_000, gateAfterChunks: 1, gate: gate)
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("adbfiles-int-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transfers = ["/a", "/b"].map { path in
+            Task {
+                let session = try await client.openTransferSession()
+                try await session.download(path, to: dir.appendingPathComponent(String(path.dropFirst())), modificationDate: nil) { _ in }
+                await session.close()
+            }
+        }
+        while device.syncConnections.withLock({ $0.open }) < 2 { try await Task.sleep(for: .milliseconds(5)) }
+        let interactive = try await client.openInteractiveSession(priority: .high) // must not wait for a transfer slot
+        #expect(try await interactive.readPrefix("/c", maxBytes: 1_000) == payload(10))
+        await interactive.close()
+        #expect(device.syncConnections.withLock { $0.peak } == 3)
+        await gate.open()
+        for task in transfers { try await task.value }
+    }
+}
+
+@Suite("Async limiter priority")
+struct AsyncLimiterTests {
+    @Test func highPriorityWaiterGoesBeforeQueuedNormalOnes() async throws {
+        let limiter = AsyncLimiter(limit: 1)
+        try await limiter.acquire()  // slot taken
+        let order = OSAllocatedUnfairLock(initialState: [String]())
+        var tasks: [Task<Void, Error>] = []
+        for name in ["n1", "n2", "n3"] {
+            tasks.append(Task {
+                try await limiter.acquire(priority: .normal)
+                order.withLock { $0.append(name) }
+                await limiter.release()
+            })
+            try await Task.sleep(for: .milliseconds(20)) // enqueue in a known order
+        }
+        tasks.append(Task {
+            try await limiter.acquire(priority: .high)
+            order.withLock { $0.append("high") }
+            await limiter.release()
+        })
+        try await Task.sleep(for: .milliseconds(20))
+        await limiter.release()
+        for task in tasks { try await task.value }
+        #expect(order.withLock { $0 } == ["high", "n1", "n2", "n3"])
+    }
 }
