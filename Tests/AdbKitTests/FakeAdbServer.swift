@@ -48,9 +48,16 @@ final class FakeAdbServer: Sendable {
             return (id, String(decoding: try await read(exactly: length), as: UTF8.self))
         }
 
+        /// Reads an 8-byte sync header: 4-byte id + LE UInt32 (a length, or the mtime for DONE).
+        func readSyncHeader() async throws -> (id: String, value: UInt32) {
+            let header = try await read(exactly: 8)
+            let value = header.suffix(4).enumerated().reduce(UInt32(0)) { $0 | UInt32($1.element) << (8 * UInt32($1.offset)) }
+            return (String(decoding: header.prefix(4), as: UTF8.self), value)
+        }
+
         func close() { connection.cancel() }
 
-        private func read(exactly count: Int) async throws -> Data {
+        func read(exactly count: Int) async throws -> Data {
             guard count > 0 else { return Data() }
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
                 connection.receive(minimumIncompleteLength: count, maximumLength: count) { data, _, _, error in

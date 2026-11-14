@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import AdbKit
@@ -50,5 +51,23 @@ struct LiveDeviceTests {
         for _ in 0..<5 { _ = try await client.list("/sdcard") }
         let stat = try await client.lstat("/sdcard/")
         #expect(stat.isDirectory)
+    }
+
+    @Test func downloadsSystemFontByteIdentical() async throws {
+        let remote = "/system/fonts/NotoSerifCJK-Regular.ttc"
+        let target = FileManager.default.temporaryDirectory.appendingPathComponent("adbfiles-live-\(UUID().uuidString).ttc")
+        defer { try? FileManager.default.removeItem(at: target) }
+        let session = try await client.openTransferSession()
+        let clock = ContinuousClock()
+        let started = clock.now
+        try await session.download(remote, to: target, modificationDate: nil) { _ in }
+        let elapsed = clock.now - started
+        await session.close()
+        let data = try Data(contentsOf: target)
+        let deviceSum = try await AdbShell.run(AdbShell.command("sha1sum", [remote]), serial: liveSerial)
+        let localSum = Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        #expect(data.count == 26_283_508)
+        #expect(deviceSum.hasPrefix(localSum))
+        #expect(elapsed < .seconds(5), "26 MB took \(elapsed); expected ≥ 5 MB/s even in debug")
     }
 }

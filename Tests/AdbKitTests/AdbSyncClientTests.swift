@@ -22,6 +22,30 @@ struct FakeDevice: Sendable {
     /// Records every request: "features", "shell:<cmd>", "sync-connection", "LIS2 <path>", …
     let log = OSAllocatedUnfairLock(initialState: [String]())
 
+    // MARK: Transfers
+    /// Remote file contents served by RECV (and used for sizes in listings).
+    var files: [String: Data] = [:]
+    /// Full paths listed as directories / symlinks (others are regular files).
+    var directories: Set<String> = []
+    var symlinks: Set<String> = []
+    /// LST2 answers for existing files: path → (size, mtime).
+    var statInfo: [String: (size: UInt64, mtime: Int64)] = [:]
+    /// RECV sends this many bytes per DATA chunk.
+    var recvChunk = 65_536
+    /// After this many DATA chunks of a RECV, wait for `gate` to open.
+    var gateAfterChunks: Int?
+    var gate: TestGate?
+    /// Pause between DATA chunks (a slow but steady device).
+    var chunkDelay: Duration?
+    /// After this many DATA chunks, stop sending forever (a stalled device).
+    var stallAfterChunks: Int?
+    /// SEND to these paths ends with FAIL.
+    var failSendPaths: Set<String> = []
+    /// Files written by SEND: path → (bytes, mtime, mode).
+    let received = OSAllocatedUnfairLock(initialState: [String: (data: Data, mtime: UInt32, mode: UInt32)]())
+    /// Currently open and peak number of sync connections.
+    let syncConnections = OSAllocatedUnfairLock(initialState: (open: 0, peak: 0))
+
     func handle(_ client: FakeAdbServer.Client) async throws {
         let first = try await client.readRequest()
         if first.hasSuffix(":features") {
@@ -41,17 +65,68 @@ struct FakeDevice: Sendable {
             return
         }
         log.withLock { $0.append("sync-connection") }
+        syncConnections.withLock { state in
+            state.open += 1
+            state.peak = max(state.peak, state.open)
+        }
+        defer { syncConnections.withLock { $0.open -= 1 } }
         var served = 0
         while true {
             let (id, path) = try await client.readSyncRequest()
             log.withLock { $0.append("\(id) \(path)") }
             if silent { try await Task.sleep(for: .seconds(30)) }
             switch id {
+            case "RECV":
+                guard let content = files[path] else {
+                    let message = Data("open failed: No such file or directory".utf8)
+                    try await client.write(Data("FAIL".utf8) + Self.le(UInt32(message.count)) + message)
+                    return // adbd ends the sync service after FAIL
+                }
+                var chunks = 0
+                var index = content.startIndex
+                while index < content.endIndex {
+                    if let stall = stallAfterChunks, chunks >= stall { try await Task.sleep(for: .seconds(30)) }
+                    if let after = gateAfterChunks, chunks == after, let gate { await gate.wait() }
+                    if let chunkDelay, chunks > 0 { try await Task.sleep(for: chunkDelay) }
+                    let end = content.index(index, offsetBy: min(recvChunk, content.endIndex - index))
+                    let chunk = Data(content[index..<end])
+                    try await client.write(Data("DATA".utf8) + Self.le(UInt32(chunk.count)) + chunk)
+                    index = end
+                    chunks += 1
+                }
+                try await client.write(Data("DONE".utf8) + Self.le(UInt32(0)))
+            case "SEND":
+                let comma = path.lastIndex(of: ",") ?? path.endIndex
+                let target = String(path[..<comma])
+                let mode = UInt32(path[path.index(after: comma)...]) ?? 0
+                var content = Data()
+                while true {
+                    let (frame, value) = try await client.readSyncHeader()
+                    if frame == "DATA" {
+                        content += try await client.read(exactly: Int(value))
+                    } else if frame == "DONE" {
+                        if failSendPaths.contains(target) {
+                            let message = Data("couldn't create file: Read-only file system".utf8)
+                            try await client.write(Data("FAIL".utf8) + Self.le(UInt32(message.count)) + message)
+                            return
+                        }
+                        let finished = content
+                        received.withLock { $0[target] = (finished, value, mode) }
+                        try await client.write(Data("OKAY".utf8) + Self.le(UInt32(0)))
+                        break
+                    } else {
+                        return
+                    }
+                }
             case "LIS2", "LIST":
                 let v2 = id == "LIS2"
                 var reply = Data()
-                for name in listings[RemotePath.normalized(path)] ?? [] {
-                    reply += v2 ? Self.dnt2(name) : Self.dent(name)
+                let directory = RemotePath.normalized(path)
+                for name in listings[directory] ?? [] {
+                    let full = RemotePath.join(directory, name)
+                    let mode: UInt32 = directories.contains(full) ? 0o40770 : (symlinks.contains(full) ? 0o120777 : 0o100660)
+                    let size = UInt64(files[full]?.count ?? 42)
+                    reply += v2 ? Self.dnt2(name, mode: mode, size: size) : Self.dent(name)
                 }
                 reply += Data("DONE".utf8) + Data(count: v2 ? 72 : 16)
                 var index = reply.startIndex
@@ -62,8 +137,14 @@ struct FakeDevice: Sendable {
                 }
             case "LST2":
                 var reply = Data("LST2".utf8)
-                let error = statErrors[path] ?? 0
-                reply += Self.le(error) + Data(count: 16) + Self.le(UInt32(error == 0 ? 0o40770 : 0)) + Data(count: 48)
+                if let info = statInfo[path] {
+                    reply += Self.le(UInt32(0)) + Data(count: 16) + Self.le(UInt32(0o100660)) + Data(count: 12)
+                    reply += Self.le(info.size) + Data(count: 8) + Self.le(info.mtime) + Data(count: 8)
+                } else {
+                    let error = statErrors[path] ?? 0
+                    // error, dev+ino, mode, then 44 bytes (nlink, uid, gid, size, atime, mtime, ctime) = 68 bytes after the id
+                    reply += Self.le(error) + Data(count: 16) + Self.le(UInt32(error == 0 ? 0o40770 : 0)) + Data(count: 44)
+                }
                 try await client.write(reply)
             default:
                 return
@@ -80,14 +161,14 @@ struct FakeDevice: Sendable {
         withUnsafeBytes(of: value.littleEndian) { Data($0) }
     }
 
-    static func dnt2(_ name: String) -> Data {
+    static func dnt2(_ name: String, mode: UInt32 = 0o100660, size: UInt64 = 42) -> Data {
         let nameBytes = Data(name.utf8)
         var data = Data("DNT2".utf8)
         data.append(le(UInt32(0)))               // error
         data.append(Data(count: 16))             // dev, ino
-        data.append(le(UInt32(0o100660)))        // mode
+        data.append(le(mode))                    // mode
         data.append(Data(count: 12))             // nlink, uid, gid
-        data.append(le(UInt64(42)))              // size
+        data.append(le(size))                    // size
         data.append(Data(count: 8))              // atime
         data.append(le(Int64(1_700_000_000)))    // mtime
         data.append(Data(count: 8))              // ctime
@@ -108,7 +189,24 @@ struct FakeDevice: Sendable {
     }
 }
 
-private func makeClient(_ device: FakeDevice, listTimeout: Duration = .seconds(2)) async throws -> (AdbSyncClient, FakeAdbServer) {
+/// A one-shot latch for tests: `wait()` suspends until `open()`.
+actor TestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+}
+
+func makeClient(_ device: FakeDevice, listTimeout: Duration = .seconds(2)) async throws -> (AdbSyncClient, FakeAdbServer) {
     let server = try await FakeAdbServer.start { try await device.handle($0) }
     let host = AdbHostClient(host: "127.0.0.1", port: server.port, connectTimeout: .seconds(1), requestTimeout: .seconds(1))
     return (AdbSyncClient(serial: "FAKE", host: host, listTimeout: listTimeout), server)

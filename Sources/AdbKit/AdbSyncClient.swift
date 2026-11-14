@@ -16,6 +16,9 @@ public actor AdbSyncClient {
     private var connection: AdbConnection?
     private var features: Set<String>?
     private var tail: Task<Void, Never>?
+    /// At most two transfer connections per device, independent of the listing connection.
+    private let transferLimiter = AsyncLimiter(limit: 2)
+    private var sessions: [UUID: AdbTransferSession] = [:]
 
     /// - Parameters:
     ///   - serial: The device to talk to.
@@ -47,12 +50,32 @@ public actor AdbSyncClient {
         }
     }
 
-    /// Closes the listing connection (e.g. the device was unplugged). An operation reading from it ends
-    /// with `AdbError.connectionClosed`; one still opening a connection or running the access-check shell
-    /// finishes within `listTimeout`.
+    /// Waits for a free transfer slot (two per device) and returns a session that owns it.
+    /// - Parameter inactivity: Longest pause allowed between reads/writes; there is no overall time limit.
+    public func openTransferSession(inactivity: Duration = .seconds(15)) async throws -> AdbTransferSession {
+        let features = try await supportedFeatures()
+        try await transferLimiter.acquire()
+        let limiter = transferLimiter
+        let token = UUID()
+        let session = AdbTransferSession(serial: serial, host: host, features: features, inactivity: inactivity) { [weak self] in
+            await limiter.release()
+            await self?.forget(token)
+        }
+        sessions[token] = session
+        return session
+    }
+
+    private func forget(_ id: UUID) {
+        sessions[id] = nil
+    }
+
+    /// Closes the listing connection and every transfer session's connection (e.g. the device was unplugged).
+    /// An operation reading from them ends with `AdbError.connectionClosed`; one still opening a connection or
+    /// running the access-check shell finishes within its timeout.
     public func disconnect() async {
         await connection?.close()
         connection = nil
+        for session in sessions.values { await session.abortConnection() }
     }
 
     // MARK: - Operations
@@ -152,10 +175,14 @@ public actor AdbSyncClient {
     }
 
     private func supports(_ feature: String) async throws -> Bool {
-        if let features { return features.contains(feature) }
+        try await supportedFeatures().contains(feature)
+    }
+
+    private func supportedFeatures() async throws -> Set<String> {
+        if let features { return features }
         let fetched = try await host.features(serial: serial)
         features = fetched
-        return fetched.contains(feature)
+        return fetched
     }
 
     private func dropConnection() async {

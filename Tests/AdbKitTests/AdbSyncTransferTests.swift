@@ -1,0 +1,327 @@
+import Foundation
+import os
+import Testing
+@testable import AdbKit
+
+private func tempDir() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("adbfiles-tests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+private func payload(_ count: Int, seed: UInt8 = 0) -> Data {
+    Data((0..<count).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ Int(seed)) })
+}
+
+/// Counts bytes reported by a progress callback.
+final class ByteCounter: Sendable {
+    private let total = OSAllocatedUnfairLock(initialState: 0)
+    var value: Int { total.withLock { $0 } }
+    var add: @Sendable (Int) -> Void { { [total] count in total.withLock { $0 += count } } }
+}
+
+@Suite("Transfers against a fake device")
+struct AdbSyncTransferTests {
+    @Test func downloadIsByteIdenticalWithMtimeAndNoTempLeft() async throws {
+        let content = payload(200_000)
+        let device = FakeDevice(files: ["/sdcard/a.bin": content])
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let target = dir.appendingPathComponent("a.bin")
+        let counter = ByteCounter()
+        let session = try await client.openTransferSession()
+        try await session.download("/sdcard/a.bin", to: target, modificationDate: Date(timeIntervalSince1970: 1_600_000_000), progress: counter.add)
+        await session.close()
+        #expect(try Data(contentsOf: target) == content)
+        #expect(counter.value == content.count)
+        let mtime = try FileManager.default.attributesOfItem(atPath: target.path)[.modificationDate] as? Date
+        #expect(mtime == Date(timeIntervalSince1970: 1_600_000_000))
+        #expect(!FileManager.default.fileExists(atPath: TransferIO.temporaryURL(for: target).path))
+    }
+
+    @Test func missingRemoteFileFailsAndLeavesNothing() async throws {
+        let (client, server) = try await makeClient(FakeDevice())
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let target = dir.appendingPathComponent("x")
+        let session = try await client.openTransferSession()
+        await #expect(throws: AdbError.serverFailure("open failed: No such file or directory")) {
+            try await session.download("/nope", to: target, modificationDate: nil) { _ in }
+        }
+        await session.close()
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).isEmpty)
+    }
+
+    @Test func sessionReopensAfterFail() async throws {
+        let device = FakeDevice(files: ["/ok": payload(10)])
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let session = try await client.openTransferSession()
+        _ = try? await session.download("/nope", to: dir.appendingPathComponent("a"), modificationDate: nil) { _ in }
+        try await session.download("/ok", to: dir.appendingPathComponent("b"), modificationDate: nil) { _ in }
+        await session.close()
+        #expect(device.log.withLock { $0 }.filter { $0 == "sync-connection" }.count == 2)
+    }
+
+    @Test func cancelAtGateLeavesNoFiles() async throws {
+        let gate = TestGate()
+        let device = FakeDevice(files: ["/big": payload(1_000_000)], recvChunk: 10_000, gateAfterChunks: 3, gate: gate)
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let counter = ByteCounter()
+        let session = try await client.openTransferSession()
+        let target = dir.appendingPathComponent("big")
+        let task = Task { try await session.download("/big", to: target, modificationDate: nil, progress: counter.add) }
+        while counter.value < 30_000 { try await Task.sleep(for: .milliseconds(5)) } // held at the gate
+        let clock = ContinuousClock()
+        let started = clock.now
+        task.cancel()
+        await #expect(throws: (any Error).self) { try await task.value }
+        #expect(clock.now - started < .seconds(1))
+        await gate.open()
+        await session.close()
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).isEmpty, "no temp or target file")
+    }
+
+    @Test func steadySlowStreamDoesNotTimeOut() async throws {
+        // Inactivity limit 300 ms; a chunk every 100 ms for ~1.5 s must succeed (an overall limit would fail).
+        let device = FakeDevice(files: ["/slow": payload(16 * 1000)], recvChunk: 1000, chunkDelay: .milliseconds(100))
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let session = try await client.openTransferSession(inactivity: .milliseconds(300))
+        try await session.download("/slow", to: dir.appendingPathComponent("slow"), modificationDate: nil) { _ in }
+        await session.close()
+    }
+
+    @Test func stalledStreamTimesOut() async throws {
+        // Inactivity limit 300 ms; the device stops after 2 chunks, so the next read waits ≥ 700 ms → timeout.
+        let device = FakeDevice(files: ["/stall": payload(10_000)], recvChunk: 1000, stallAfterChunks: 2)
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let session = try await client.openTransferSession(inactivity: .milliseconds(300))
+        let clock = ContinuousClock()
+        let started = clock.now
+        await #expect(throws: AdbError.timeout) {
+            try await session.download("/stall", to: dir.appendingPathComponent("stall"), modificationDate: nil) { _ in }
+        }
+        #expect(clock.now - started < .milliseconds(700))
+        await session.close()
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).isEmpty)
+    }
+
+    @Test func atMostTwoTransferConnectionsPerDevice() async throws {
+        let gate = TestGate()
+        let files = Dictionary(uniqueKeysWithValues: (0..<3).map { ("/f\($0)", payload(50_000, seed: UInt8($0))) })
+        let device = FakeDevice(files: files, recvChunk: 10_000, gateAfterChunks: 1, gate: gate)
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let opened = OSAllocatedUnfairLock(initialState: 0)
+        let tasks = (0..<3).map { index in
+            Task {
+                let session = try await client.openTransferSession()
+                opened.withLock { $0 += 1 }
+                try await session.download("/f\(index)", to: dir.appendingPathComponent("f\(index)"), modificationDate: nil) { _ in }
+                await session.close()
+            }
+        }
+        while device.syncConnections.withLock({ $0.open }) < 2 { try await Task.sleep(for: .milliseconds(5)) }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(opened.withLock { $0 } == 2, "the third transfer waits for a slot")
+        await gate.open()
+        for task in tasks { try await task.value }
+        #expect(device.syncConnections.withLock { $0.peak } == 2)
+        for index in 0..<3 {
+            #expect(try Data(contentsOf: dir.appendingPathComponent("f\(index)")) == files["/f\(index)"])
+        }
+    }
+
+    @Test func uploadSendsBytesModeAndMtime() async throws {
+        let device = FakeDevice()
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("Звіт 🎉.bin")
+        let content = payload(150_000)
+        try content.write(to: source)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000), .posixPermissions: 0o640], ofItemAtPath: source.path
+        )
+        let counter = ByteCounter()
+        let session = try await client.openTransferSession()
+        try await session.upload(source, to: "/sdcard/Download/Звіт 🎉.bin", progress: counter.add)
+        await session.close()
+        let stored = try #require(device.received.withLock { $0["/sdcard/Download/Звіт 🎉.bin"] })
+        #expect(stored.data == content)
+        #expect(stored.mtime == 1_700_000_000)
+        #expect(stored.mode == 0o100640)
+        #expect(counter.value == content.count)
+    }
+
+    @Test func uploadFailCarriesMessage() async throws {
+        let (client, server) = try await makeClient(FakeDevice(failSendPaths: ["/system/x"]))
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("x")
+        try Data("x".utf8).write(to: source)
+        let session = try await client.openTransferSession()
+        await #expect(throws: AdbError.serverFailure("couldn't create file: Read-only file system")) {
+            try await session.upload(source, to: "/system/x") { _ in }
+        }
+        await session.close()
+    }
+
+    @Test func unreadableLocalFileIsALocalError() async throws {
+        let (client, server) = try await makeClient(FakeDevice())
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: dir.appendingPathComponent("locked").path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        let source = dir.appendingPathComponent("locked")
+        try Data("secret".utf8).write(to: source)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: source.path)
+        let session = try await client.openTransferSession()
+        await #expect(throws: AdbError.self) { try await session.upload(source, to: "/sdcard/locked") { _ in } }
+        await session.close()
+    }
+
+    @Test func staleTempFromAPreviousRunIsReplaced() async throws {
+        let (client, server) = try await makeClient(FakeDevice(files: ["/a": payload(1000)]))
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let target = dir.appendingPathComponent("a")
+        try Data(repeating: 0xFF, count: 5000).write(to: TransferIO.temporaryURL(for: target))
+        let session = try await client.openTransferSession()
+        try await session.download("/a", to: target, modificationDate: nil) { _ in }
+        await session.close()
+        #expect(try Data(contentsOf: target) == payload(1000))
+    }
+
+    @Test func existingTargetIsNeverOverwritten() async throws {
+        let (client, server) = try await makeClient(FakeDevice(files: ["/a": payload(1000)]))
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let target = dir.appendingPathComponent("a")
+        try Data("mine".utf8).write(to: target)
+        let session = try await client.openTransferSession()
+        await #expect(throws: AdbError.localFileExists(target.path)) {
+            try await session.download("/a", to: target, modificationDate: nil) { _ in }
+        }
+        await session.close()
+        #expect(try Data(contentsOf: target) == Data("mine".utf8))
+        #expect(!FileManager.default.fileExists(atPath: TransferIO.temporaryURL(for: target).path))
+    }
+
+    @Test func walkIsRecursiveAndSkipsSymlinks() async throws {
+        let device = FakeDevice(
+            listings: ["/r": ["sub", "empty", "a.txt", "link"], "/r/sub": ["b.txt"]],
+            files: ["/r/a.txt": payload(3), "/r/sub/b.txt": payload(4)],
+            directories: ["/r/sub", "/r/empty"], symlinks: ["/r/link"]
+        )
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let session = try await client.openTransferSession()
+        let entries = try await session.walk("/r")
+        await session.close()
+        #expect(Set(entries.map(\.relativePath)) == ["sub", "empty", "a.txt", "sub/b.txt"])
+        #expect(entries.firstIndex { $0.relativePath == "sub" }! < entries.firstIndex { $0.relativePath == "sub/b.txt" }!)
+    }
+
+    @Test func folderDownloadContinuesPastFailuresAndRetrySkipsDoneFiles() async throws {
+        var device = FakeDevice(
+            listings: ["/r": ["sub", "empty", "a.txt", "gone.txt"], "/r/sub": ["b.txt"]],
+            files: ["/r/a.txt": payload(300), "/r/sub/b.txt": payload(400)],
+            directories: ["/r/sub", "/r/empty"]
+        )
+        let (client, server) = try await makeClient(device)
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let root = dir.appendingPathComponent("r")
+        var session = try await client.openTransferSession()
+        let entries = try await session.walk("/r")
+        let first = try await session.downloadFolder("/r", into: root, entries: entries) { _ in }
+        await session.close()
+        server.stop()
+        #expect(first.copied == 2)
+        #expect(first.failures.keys.sorted() == ["gone.txt"], "unreadable file fails, the rest is copied")
+        #expect(try Data(contentsOf: root.appendingPathComponent("sub/b.txt")) == payload(400))
+        var isDirectory: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("empty").path, isDirectory: &isDirectory) && isDirectory.boolValue)
+
+        // Retry into the same root: completed files are skipped (same size + mtime), the missing one is fetched.
+        device.files["/r/gone.txt"] = payload(5)
+        let (client2, server2) = try await makeClient(device)
+        defer { server2.stop() }
+        session = try await client2.openTransferSession()
+        let retryEntries = try await session.walk("/r")
+        let second = try await session.downloadFolder("/r", into: root, entries: retryEntries) { _ in }
+        await session.close()
+        #expect(second.skipped == 2)
+        #expect(second.copied == 1)
+        #expect(second.failures.isEmpty)
+    }
+
+    @Test func folderUploadSkipsUnreadableFilesAndCreatesEmptyFolders() async throws {
+        let device = FakeDevice()
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        let root = dir.appendingPathComponent("Фото")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: root.appendingPathComponent("locked.bin").path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("inner"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("empty"), withIntermediateDirectories: true)
+        try payload(10).write(to: root.appendingPathComponent("a.bin"))
+        try payload(20).write(to: root.appendingPathComponent("inner/b.bin"))
+        try payload(30).write(to: root.appendingPathComponent("locked.bin"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root.appendingPathComponent("locked.bin").path)
+
+        let session = try await client.openTransferSession()
+        let result = try await session.uploadFolder(root, to: "/sdcard/Фото", entries: try TransferIO.walkLocal(root)) { _ in }
+        await session.close()
+        #expect(result.copied == 2)
+        #expect(result.failures.keys.sorted() == ["locked.bin"])
+        #expect(device.received.withLock { $0["/sdcard/Фото/inner/b.bin"]?.data } == payload(20))
+        #expect(device.log.withLock { $0 }.contains("shell:mkdir -p '/sdcard/Фото' '/sdcard/Фото/empty'"))
+    }
+
+    @Test func disconnectEndsTransferPromptly() async throws {
+        let gate = TestGate()
+        let device = FakeDevice(files: ["/big": payload(500_000)], recvChunk: 10_000, gateAfterChunks: 2, gate: gate)
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let counter = ByteCounter()
+        let session = try await client.openTransferSession()
+        let task = Task { try await session.download("/big", to: dir.appendingPathComponent("big"), modificationDate: nil, progress: counter.add) }
+        while counter.value < 20_000 { try await Task.sleep(for: .milliseconds(5)) }
+        let clock = ContinuousClock()
+        let started = clock.now
+        await client.disconnect()
+        await #expect(throws: AdbError.connectionClosed) { try await task.value }
+        #expect(clock.now - started < .seconds(1))
+        await gate.open()
+        await session.close()
+    }
+}

@@ -28,6 +28,10 @@ public enum AdbError: Error, Sendable, Equatable, LocalizedError {
     case notADirectory(String)
     /// The device reported this errno for the path.
     case remoteError(path: String, errno: UInt32)
+    /// A local file already exists where a transfer wanted to create one (never overwritten).
+    case localFileExists(String)
+    /// Reading or writing a file on the Mac failed.
+    case localIOError(String)
 
     public var errorDescription: String? {
         switch self {
@@ -44,6 +48,8 @@ public enum AdbError: Error, Sendable, Equatable, LocalizedError {
         case .permissionDenied(let path): "You don’t have permission to view “\(path)”."
         case .notADirectory(let path): "“\(path)” is not a folder."
         case .remoteError(let path, let errno): "The device could not open “\(path)” (error \(errno))."
+        case .localFileExists(let path): "“\(path)” already exists on this Mac."
+        case .localIOError(let detail): "Could not access the file on this Mac: \(detail)"
         }
     }
 }
