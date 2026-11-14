@@ -29,6 +29,9 @@ Swift 6 language mode (strict concurrency) and macOS 14 minimum for all targets.
 | `SyncProtocol.swift` | Sync request encoding (≤ 1024-byte paths), incremental `SyncListDecoder` (`DENT`/`DNT2`/`DONE`/`FAIL`), stat replies |
 | `AdbSyncClient.swift` | `actor`, one persistent `sync:` connection per device; `list` (LIS2/LIST by feature), `lstat`, `disconnect`; operations serialized; signpost "list" |
 | `AdbShell.swift` | `quote(_:)` — the only shell-escaping helper; `accessCheck(_:)`; `run(_:serial:)` over `shell:` |
+| `AdbTransferSession.swift` | `actor`, one transfer slot = one `sync:` connection: `download` (via `*.adbfiles-part` + no-overwrite move), `upload` (mode + mtime), `walk`, `downloadFolder`/`uploadFolder` (skip finished files on Retry, per-file failures continue, post-order folder mtimes); 15 s inactivity limit per read/write, no overall limit; reopens after `FAIL` |
+| `AsyncLimiter.swift` | FIFO, cancellation-aware limiter; `AdbSyncClient.openTransferSession()` allows two sessions per device |
+| `TransferIO.swift` | Temp names, no-overwrite move, mtimes, local folder walk |
 | `Log.swift` | `Logger.adb` |
 
 Empty listings are ambiguous (adbd returns only `DONE` for empty, missing and unreadable folders), so
@@ -54,10 +57,23 @@ permission bits allow, e.g. `/storage/emulated`).
   - `Browser/BrowserView` — owns the store in `.task(id: serial)`; on teardown cancels it and, if the
     device is gone, calls `AdbSyncClient.disconnect()`. `BrowserCommands` (Go menu, ⌘[ ⌘] ⌘↑ ⌘↓ ⌘R ⌘⇧.)
     reach the focused window's store through `@FocusedValue(\.browser)`.
+  - `Transfers/TransferQueue` — `@Observable @MainActor`, app-wide: per-device FIFO, two running per
+    device. Final state comes from a stop reason recorded before cancelling (user → cancelled, device gone
+    → failed + Retry); events carry an attempt number and are dropped once final. Keep-both names are
+    reserved on both sides before a transfer starts (`ConflictNaming`); Retry reuses the name. Progress
+    reaches the UI ≤ 10×/s through `ProgressThrottle` (lock + injectable clock). `TransferEngine` is the
+    test seam; `AdbTransferEngine` runs one `AdbTransferSession` per item.
+  - `Transfers/TransfersButton`, `TransfersPopover`, `TransferRow`, `TransferStatusBar` — toolbar ring +
+    badge, list with cancel/retry/show in Finder, bottom bar with combined progress.
+  - `Transfers/TransferActions`, `App/TransferCommands` — File › Download To… (⌥⌘D), Upload… (⌘U).
+- `AppKitBridges/FilePromiseDelegate` — `NSFilePromiseProvider` delegate: enqueues the download on drop,
+  writes to Finder's exact URL, calls Finder's completion when the transfer ends.
+- `AppKitBridges/FileTableView` — drag rows out (file promises) and accept Finder drops on the table or a
+  folder row; empty folders keep the (empty) table so drops work everywhere.
 - `AppKitBridges/FileTableView` — `NSViewRepresentable` over a view-based `NSTableView`; reloads only
   when `rowsVersion` changes; Return opens, type-select by name, icons cached per extension.
-- `Services/` — `AppServices` (one `AdbSyncClient` per device + the shared `ListingCache`, injected via
-  `.environment`), `ListingCache` (actor, in-memory, keyed by serial + path), `Log.swift`
+- `Services/` — `AppServices` (sync clients via `SyncClientRegistry`, the shared `ListingCache` and the
+  `TransferQueue`, injected via `.environment`; `devicesChanged` fails transfers of devices that left), `ListingCache` (actor, in-memory, keyed by serial + path), `Log.swift`
   (`Logger.ui` / `Logger.transfer`, subsystem `dev.local.AdbFiles`, same as `Logger.adb`).
 
 Filter logs with `log stream --level info --predicate 'subsystem == "dev.local.AdbFiles"'`

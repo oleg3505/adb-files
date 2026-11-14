@@ -43,17 +43,17 @@ mid-transfer, no partial files left behind).
       contents byte-identical (SHA-1), mtimes preserved, folders recreated recursively.
 - [ ] AC2 "Upload…" and dropping Finder items onto the table copy them into the current folder (onto a
       folder row: into that folder); the listing refreshes; byte-identical, mtime preserved.
-- [ ] AC3 Dragging rows to Finder starts the download only on drop and places the items there.
-- [ ] AC4 The popover shows each transfer with progress, speed and ETA; the toolbar badge shows active count.
-- [ ] AC5 At most 2 transfers run per device at once; others wait in order.
-- [ ] AC6 Progress is published at most 10 times per second per transfer.
-- [ ] AC7 Cancel stops a transfer within 1 s and leaves no partial file on either side.
+- [x] AC3 Dragging rows to Finder starts the download only on drop and places the items there.
+- [x] AC4 The popover shows each transfer with progress, speed and ETA; the toolbar badge shows active count.
+- [x] AC5 At most 2 transfers run per device at once; others wait in order.
+- [x] AC6 Progress is published at most 10 times per second per transfer.
+- [x] AC7 Cancel stops a transfer within 1 s and leaves no partial file on either side.
 - [ ] AC8 Unplugging the device mid-transfer marks its transfers failed (no hang, no crash); Retry after
       replugging completes them.
-- [ ] AC9 A stalled transfer fails after 15 s without data; a long healthy transfer never times out.
-- [ ] AC10 Name conflicts keep both (`name 2.ext`), never overwrite silently.
-- [ ] AC11 Cyrillic/emoji names transfer correctly; a transfer of ~200 MB runs at ≥ 20 MB/s (release build).
-- [ ] AC12 Clean build 0 warnings; tests green; `AdbKit` imports no SwiftUI/AppKit.
+- [x] AC9 A stalled transfer fails after 15 s without data; a long healthy transfer never times out.
+- [x] AC10 Name conflicts keep both (`name 2.ext`), never overwrite silently.
+- [x] AC11 Cyrillic/emoji names transfer correctly; a transfer of ~200 MB runs at ≥ 20 MB/s (release build).
+- [x] AC12 Clean build 0 warnings; tests green; `AdbKit` imports no SwiftUI/AppKit.
 
 ## Edge cases
 | Case | Expected behaviour | Decided by |
@@ -77,3 +77,13 @@ mid-transfer, no partial files left behind).
 | 1 | May verification write to the phone? | Yes: `/sdcard/Download/AdbFilesTest/`, deleted afterwards | answered |
 | 2 | Folders in M4? | Yes, recursive both ways | answered |
 | 3 | Shortcuts | ⌥⌘D Download To…, ⌘U Upload… (Finder has no equivalents) | no |
+
+## Verification notes (2026-11-14)
+- AC1 partial: downloads of files and recursive folders are verified byte-identical with preserved mtimes by
+  the live queue test and by a Finder drag-out; the File › Download To… menu path itself was not exercised.
+- AC2 partial: Finder drops onto the table and onto an empty folder are verified live (folder + two 300 MB
+  files); a drop onto a folder row and the File › Upload… menu were not exercised.
+- AC8 not verified live (no unplug during a transfer in any log); covered by `TransferQueueTests`
+  (`deviceGoneFailsQueuedAndRunningAsRetryable`) and `disconnectEndsTransferPromptly`.
+- AC9 verified with the fake device (fixed margins), not on hardware.
+- User feedback during verification: progress was not visible enough → bottom status bar + toolbar ring added.
