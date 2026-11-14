@@ -22,5 +22,10 @@ let package = Package(
             name: "AdbKitTests",
             dependencies: ["AdbKit"]
         ),
+        // App logic (stores, sorting, caching) via `@testable import AdbFiles`.
+        .testTarget(
+            name: "AdbFilesTests",
+            dependencies: ["AdbFiles", "AdbKit"]
+        ),
     ]
 )

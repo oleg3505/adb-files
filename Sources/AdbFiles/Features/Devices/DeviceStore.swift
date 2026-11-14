@@ -31,15 +31,25 @@ final class DeviceStore {
         devices.first { $0.serial == selectedSerial }
     }
 
-    @ObservationIgnored private let client: AdbHostClient
-    @ObservationIgnored private let launcher: AdbServerLauncher
+    @ObservationIgnored private let client: any DeviceTracking
+    @ObservationIgnored private let launcher: any ServerStarting
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var trackingTask: Task<Void, Never>?
     @ObservationIgnored private let createdAt = ContinuousClock.now
     @ObservationIgnored private var hasLoggedFirstList = false
 
-    init(client: AdbHostClient = AdbHostClient(), launcher: AdbServerLauncher = AdbServerLauncher()) {
+    /// - Parameters:
+    ///   - client: Source of device-list updates (the ADB host client in production).
+    ///   - launcher: Starts the ADB server when it is not running.
+    ///   - sleep: Waits between reconnect attempts; injectable so tests run instantly.
+    init(
+        client: any DeviceTracking = AdbHostClient(),
+        launcher: any ServerStarting = AdbServerLauncher(),
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
         self.client = client
         self.launcher = launcher
+        self.sleep = sleep
     }
 
     /// Starts tracking if not already running.
@@ -92,7 +102,7 @@ final class DeviceStore {
                 serverStartAttempted = true
                 Logger.ui.info("server not running, starting it")
                 do {
-                    try await launcher.startServer()
+                    try await launcher.startAdbServer()
                     continue // track again right away
                 } catch {
                     // A retry() may have replaced this task; never let a stale loop overwrite state.
@@ -123,7 +133,7 @@ final class DeviceStore {
             }
 
             do {
-                try await Task.sleep(for: backoff)
+                try await sleep(backoff)
             } catch {
                 return
             }

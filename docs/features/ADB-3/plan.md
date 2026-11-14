@@ -110,7 +110,7 @@ the user's answer, so no ADR.
 | Risk | Impact | Cheapest way to find out early |
 |------|--------|-------------------------------|
 | `@testable import` of an executable target fails or links `main` twice | R1 blocked | Done first in R1 with one trivial test |
-| NSTableView ↔ SwiftUI state sync (selection/sort loops, reload churn) | Janky table | Rows carry a version; Coordinator reloads only on version change; 10k-file folder run in R5 (f) |
+| NSTableView ↔ SwiftUI state sync (selection/sort loops, reload churn) | Janky table | Rows carry a version; Coordinator reloads only on version change; Camera (7,948) run in R5 (b) |
 | Listing 8–10k entries is slow (~1.2 s in the Python probe) | Slow first open | Bulk-buffer decoding; signpost + `ms=` log; cache makes revisits instant |
 | Empty-vs-denied needs a `shell:` round-trip | Extra latency on empty folders | Only when 0 entries; measured in (e) |
 
