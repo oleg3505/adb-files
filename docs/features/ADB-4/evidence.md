@@ -42,3 +42,26 @@ All writes went to `/sdcard/Download/AdbFilesTest` (user-approved) and the folde
 - Flaky shell reads: Network.framework reported a peer close as `ENODATA` → mapped to `connectionClosed`.
 - A queue test asserted start order within a pair (not defined by FIFO) → checks slot assignment instead.
 - Process note: commit 3972d04 was made after that flaky test had failed once; fixed in ad33976.
+
+### Self-review
+- `code-reviewer` on `main..HEAD`: 1 blocking, 4 should-fix, 3 nits — all fixed:
+  - Blocking: a name reservation was released when an item was *marked* cancelled/failed, while its task could
+    still be writing; Retry reused the name blindly → silent overwrite. Now reservations have an owner and live
+    until the task really ends; Retry waits for the previous attempt to end, invalidates it at once, and picks a
+    new name if the old one is held by another item or (single files) exists. Tests:
+    `cancelledButStillRunningAttemptKeepsItsName`, `retryAfterOthersTookTheNameGetsANewName`,
+    `retryWaitsForThePreviousAttemptToEnd`. Mutation checks: releasing in `finish` fails the first; not
+    invalidating on Retry fails the third (it also exposed a real bug: the old attempt's CancellationError marked
+    the retried item failed). Both restored.
+  - `remoteExists` errors were treated as "name is free" → now it throws and the item fails retryably
+    (`unknownRemoteExistenceFailsInsteadOfOverwriting`).
+  - Case-only name clashes in a downloaded folder (APFS is case-insensitive) → per-file failure, never an
+    overwrite (`caseOnlyNameClashIsAFailureNotAnOverwrite`).
+  - `mkdir -p` batched (≤ 8 KB per request) with an echoed marker; failures recorded (`failedMkdirIsRecordedNotSilent`).
+  - `.`/`..` from older adbd skipped in `SyncListDecoder` (`skipsDotEntriesFromOlderAdbd`).
+  - Nits: Download To… is ⇧⌘D (⌥⌘D belongs to the system); `deviceGone` marks all items before any cleanup;
+    a SEND rejected mid-stream reports adbd's FAIL message instead of "connection closed".
+- Live suites ran in parallel and one suite's teardown deleted the shared test folder under another → each suite
+  writes to its own subfolder of `/sdcard/Download/AdbFilesTest`; the root is removed with `rmdir` when empty.
+- After fixes: clean build 0 warnings; `swift test` 179 passed, 40× → 0 failures; all live suites together 3× pass;
+  `ls -d /sdcard/Download/AdbFilesTest` → gone.

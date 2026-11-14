@@ -17,7 +17,8 @@ protocol TransferEngine: Sendable {
     ) async throws -> FolderTransferResult
 
     /// Whether `path` exists on the device (used to pick keep-both names for uploads).
-    func remoteExists(serial: String, path: String) async -> Bool
+    /// Throws when it can't tell: an unknown answer must never be treated as "the name is free".
+    func remoteExists(serial: String, path: String) async throws -> Bool
 }
 
 /// Real engine: one transfer session per transfer, at most two per device (enforced by `AdbSyncClient`).
@@ -75,9 +76,8 @@ struct AdbTransferEngine: TransferEngine {
         }
     }
 
-    func remoteExists(serial: String, path: String) async -> Bool {
-        guard let stat = try? await client(serial).lstat(path) else { return false }
-        return stat.errorCode == 0
+    func remoteExists(serial: String, path: String) async throws -> Bool {
+        try await client(serial).lstat(path).errorCode == 0
     }
 }
 

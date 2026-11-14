@@ -35,8 +35,11 @@ final class TransferQueue {
     @ObservationIgnored private let maxPerDevice: Int
     @ObservationIgnored private let now: @Sendable () -> Duration
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
-    /// Reserved destination names: "local|<folder>|<name>" or "remote|<serial>|<folder>|<name>".
-    @ObservationIgnored private var reservations: Set<String> = []
+    /// Reserved destination names ("local|<folder>|<name>" or "remote|<serial>|<folder>|<name>") → owning item.
+    /// A reservation lives until the owner's task has really ended, not just until the item is marked final.
+    @ObservationIgnored private var reservations: [String: UUID] = [:]
+    /// Items whose engine task is still running (a cancelled one may still be winding down).
+    @ObservationIgnored private var liveTasks: Set<UUID> = []
     /// (time, bytesDone) samples per item for the speed window.
     @ObservationIgnored private var samples: [UUID: [(Duration, UInt64)]] = [:]
     /// One-shot callbacks run when an item reaches a final state (file promises wait on these).
@@ -87,6 +90,8 @@ final class TransferQueue {
         case .failed, .cancelled: break
         default: return
         }
+        // Invalidate the previous attempt now: it may still be winding down and must not report into this one.
+        items[index].attempt += 1
         items[index].state = .queued
         items[index].stopReason = nil
         items[index].bytesDone = 0
@@ -102,12 +107,15 @@ final class TransferQueue {
 
     /// The device went away: its unfinished transfers fail and can be retried later.
     func deviceGone(_ serial: String) {
-        for index in items.indices where items[index].request.serial == serial && items[index].state.isActive {
+        // Mark everything first, so cleaning up one item can't start another queued item of this device.
+        let affected = items.indices.filter { items[$0].request.serial == serial && items[$0].state.isActive }
+        for index in affected {
             items[index].stopReason = .deviceGone
             items[index].state = .failed("The device was disconnected.", retryable: true)
-            finish(index)
             Logger.transfer.info("transfer failed id=\(self.items[index].id.uuidString.prefix(8), privacy: .public) reason=device-gone")
         }
+        for index in affected { finish(index, pumpAfter: false) }
+        pump()
     }
 
     // MARK: - Scheduling
@@ -116,7 +124,8 @@ final class TransferQueue {
         let running = Dictionary(grouping: items.filter { $0.state == .preparing || $0.state == .running }, by: \.request.serial)
             .mapValues(\.count)
         var slots = running
-        for index in items.indices where items[index].state == .queued {
+        // A retried item waits until its previous attempt's task has ended (no shared temp file or name).
+        for index in items.indices where items[index].state == .queued && !liveTasks.contains(items[index].id) {
             let serial = items[index].request.serial
             guard slots[serial, default: 0] < maxPerDevice else { continue }
             slots[serial, default: 0] += 1
@@ -129,11 +138,36 @@ final class TransferQueue {
         items[index].state = .preparing
         let id = items[index].id
         let attempt = items[index].attempt
-        tasks[id] = Task { [weak self] in await self?.execute(id: id, attempt: attempt) }
+        liveTasks.insert(id)
+        tasks[id] = Task { [weak self] in
+            await self?.execute(id: id, attempt: attempt)
+            self?.taskEnded(id)
+        }
+    }
+
+    /// The engine task of `id` has returned: only now its name may be reused and its slot refilled.
+    private func taskEnded(_ id: UUID) {
+        liveTasks.remove(id)
+        releaseReservations(of: id)
+        pump()
+    }
+
+    private func releaseReservations(of id: UUID) {
+        for (key, owner) in reservations where owner == id { reservations[key] = nil }
     }
 
     private func execute(id: UUID, attempt: Int) async {
-        guard let destination = await resolveDestination(id: id, attempt: attempt) else { return }
+        let destination: String
+        do {
+            guard let resolved = try await resolveDestination(id: id, attempt: attempt) else { return }
+            destination = resolved
+        } catch {
+            // Could not tell whether the name is free (e.g. the stat timed out): never guess, fail retryably.
+            guard let index = current(id, attempt) else { return }
+            items[index].state = .failed("Couldn’t check the destination: \(error.localizedDescription)", retryable: true)
+            finish(index)
+            return
+        }
         guard let index = current(id, attempt) else { return }
         let request = items[index].request
         let started = now()
@@ -159,33 +193,55 @@ final class TransferQueue {
         }
     }
 
-    /// Picks and reserves the keep-both name (once; Retry reuses it). Returns the full destination path.
-    private func resolveDestination(id: UUID, attempt: Int) async -> String? {
+    /// Picks and reserves the keep-both name. Retry reuses the first name when it is still ours: a folder keeps
+    /// its partial target (so finished files are skipped); a single file gets a new name if the old one is now
+    /// taken by another item or exists. Returns the full destination path.
+    private func resolveDestination(id: UUID, attempt: Int) async throws -> String? {
         guard let index = current(id, attempt) else { return nil }
         let request = items[index].request
-        if let existing = items[index].resolvedName ?? request.fixedName {
-            // Retry, or a name chosen by the drop destination (Finder already made it unique).
-            reservations.insert(reservationKey(request, existing))
-            items[index].resolvedName = existing
+        if let fixed = request.fixedName {
+            // Chosen by the drop destination (Finder already made it unique).
+            reservations[reservationKey(request, fixed)] = id
+            items[index].resolvedName = fixed
             return items[index].destinationPath
+        }
+        if let previous = items[index].resolvedName {
+            let owner = reservations[reservationKey(request, previous)]
+            let heldByOther = owner != nil && owner != id
+            var takenOnDisk = false
+            if !request.isFolder, !heldByOther {
+                switch request.direction {
+                case .download:
+                    takenOnDisk = FileManager.default.fileExists(atPath: (request.targetFolder as NSString).appendingPathComponent(previous))
+                case .upload:
+                    takenOnDisk = try await engine.remoteExists(serial: request.serial, path: RemotePath.join(request.targetFolder, previous))
+                }
+            }
+            guard let index = current(id, attempt) else { return nil }
+            let stillHeldByOther = reservations[reservationKey(request, previous)].map { $0 != id } ?? false
+            if !takenOnDisk, !stillHeldByOther {
+                reservations[reservationKey(request, previous)] = id
+                return items[index].destinationPath
+            }
+            items[index].resolvedName = nil // pick a fresh keep-both name below
         }
         var candidate = request.name
         while true {
-            let reserved = ConflictNaming.uniqueName(candidate) { reservations.contains(reservationKey(request, $0)) }
+            let reserved = ConflictNaming.uniqueName(candidate) { reservations[reservationKey(request, $0)] != nil }
             let exists: Bool
             switch request.direction {
             case .download:
                 exists = FileManager.default.fileExists(atPath: (request.targetFolder as NSString).appendingPathComponent(reserved))
             case .upload:
-                exists = await engine.remoteExists(serial: request.serial, path: RemotePath.join(request.targetFolder, reserved))
+                exists = try await engine.remoteExists(serial: request.serial, path: RemotePath.join(request.targetFolder, reserved))
             }
             guard let index = current(id, attempt) else { return nil }
             // No suspension between this check and the insert, so two items can't take the same name.
-            if exists || reservations.contains(reservationKey(request, reserved)) {
+            if exists || reservations[reservationKey(request, reserved)] != nil {
                 candidate = ConflictNaming.uniqueName(reserved) { $0 == reserved }
                 continue
             }
-            reservations.insert(reservationKey(request, reserved))
+            reservations[reservationKey(request, reserved)] = id
             items[index].resolvedName = reserved
             return items[index].destinationPath
         }
@@ -271,14 +327,15 @@ final class TransferQueue {
         }
     }
 
-    /// Releases the item's slot and name reservation and starts what can run next.
-    private func finish(_ index: Int) {
+    /// Ends the item: completion callback, cancel its task. The name reservation is released only when the task
+    /// has really ended (`taskEnded`), or now if the item never started.
+    private func finish(_ index: Int, pumpAfter: Bool = true) {
         let item = items[index]
         completions.removeValue(forKey: item.id)?(item.state)
         tasks.removeValue(forKey: item.id)?.cancel()
         samples[item.id] = nil
-        if let name = item.resolvedName { reservations.remove(reservationKey(item.request, name)) }
-        pump()
+        if !liveTasks.contains(item.id) { releaseReservations(of: item.id) }
+        if pumpAfter { pump() }
     }
 
     // MARK: - Helpers

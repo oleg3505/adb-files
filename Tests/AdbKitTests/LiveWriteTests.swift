@@ -7,7 +7,9 @@ import Testing
 private let writeSerial = ProcessInfo.processInfo.environment["ADB_TEST_SERIAL"] ?? ""
 private let writesAllowed = ProcessInfo.processInfo.environment["ADB_TEST_WRITE"] == "1"
 /// The only folder these tests may write to on the device; removed after every test.
-private let testFolder = "/sdcard/Download/AdbFilesTest"
+private let approvedRoot = "/sdcard/Download/AdbFilesTest"
+/// Each live suite writes to its own subfolder, because suites run in parallel.
+private let testFolder = approvedRoot + "/write"
 
 private func sha1(_ data: Data) -> String { Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
@@ -16,6 +18,7 @@ private func withTestFolder(_ body: () async throws -> Void) async throws {
     var failure: Error?
     do { try await body() } catch { failure = error }
     _ = try? await AdbShell.run(AdbShell.command("rm -r", [testFolder]), serial: writeSerial)
+    _ = try? await AdbShell.run(AdbShell.command("rmdir", [approvedRoot]) + " 2>/dev/null", serial: writeSerial) // only if empty
     let check = try await AdbShell.run("ls -d \(AdbShell.quote(testFolder)) 2>/dev/null || echo gone", serial: writeSerial)
     #expect(check.trimmingCharacters(in: .whitespacesAndNewlines) == "gone", "test folder must be removed")
     if let failure { throw failure }

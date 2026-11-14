@@ -139,6 +139,17 @@ struct SyncProtocolTests {
         #expect(try decoder.next() == .done)
     }
 
+    @Test func skipsDotEntriesFromOlderAdbd() throws {
+        var decoder = SyncListDecoder(v2: true, directory: "/d")
+        decoder.append(dnt2(name: ".", mode: 0o40770, size: 0, mtime: 0) + dnt2(name: "..", mode: 0o40770, size: 0, mtime: 0)
+            + dnt2(name: "real", mode: 0o100660, size: 1, mtime: 0) + doneV2)
+        var names: [String] = []
+        while let item = try decoder.next() {
+            if case .entry(let file) = item { names.append(file.name) }
+        }
+        #expect(names == ["real"])
+    }
+
     @Test func failCarriesMessage() {
         var decoder = SyncListDecoder(v2: true, directory: "/")
         decoder.append(Data("FAIL".utf8) + Data([13, 0, 0, 0]) + Data("path too long".utf8))

@@ -175,6 +175,8 @@ public struct SyncListDecoder: Sendable {
             let nameStart = body + entryBodySize
             let name = String(decoding: buffer[nameStart..<nameStart + nameLength], as: UTF8.self)
             offset = nameStart + nameLength
+            // Older adbd versions pass `.` and `..` through from readdir; they are never real entries.
+            if name == "." || name == ".." { return try next() }
             return .entry(makeEntry(name: name, body: body))
         default:
             throw .protocolError("unexpected sync id \(id.debugDescription)")

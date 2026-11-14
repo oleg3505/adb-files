@@ -10,7 +10,7 @@ struct TransferCommands: Commands {
             Button("Download To…") {
                 if let browser { TransferActions.downloadSelection(of: browser, queue: services.transfers) }
             }
-            .keyboardShortcut("d", modifiers: [.command, .option])
+            .keyboardShortcut("d", modifiers: [.command, .shift]) // ⌥⌘D is taken by the system (Dock hiding)
             .disabled(browser?.selection.isEmpty ?? true)
             Button("Upload…") {
                 if let browser { TransferActions.uploadInto(browser, queue: services.transfers) }

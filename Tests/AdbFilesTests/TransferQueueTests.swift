@@ -24,6 +24,8 @@ final class FakeEngine: TransferEngine {
         case fail(AdbError)
         /// Run until cancelled (then throw CancellationError, like a closed socket).
         case untilCancelled
+        /// Like `untilCancelled`, but keep running this long after the cancel (a slow wind-down).
+        case lingerAfterCancel(Duration)
         /// Emit `count` byte events of `size`, advancing `clock` by `step` before each.
         case stream(count: Int, size: Int, step: Duration, thenGate: String?)
     }
@@ -35,18 +37,26 @@ final class FakeEngine: TransferEngine {
         var peak: [String: Int] = [:]
         var lastEvents: (@Sendable (TransferEvent) -> Void)?
         var behaviors: [String: [Behavior]] = [:]
+        var runningByName: [String: Int] = [:]
+        var maxSameName = 0
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
     let gates: [String: Gate]
     let clock: ManualClock?
     let remoteExisting: Set<String>
+    let remoteErrors: Set<String>
 
-    init(gates: [String] = [], clock: ManualClock? = nil, remoteExisting: Set<String> = []) {
+    init(gates: [String] = [], clock: ManualClock? = nil, remoteExisting: Set<String> = [], remoteErrors: Set<String> = []) {
         self.gates = Dictionary(uniqueKeysWithValues: gates.map { ($0, Gate()) })
         self.clock = clock
         self.remoteExisting = remoteExisting
+        self.remoteErrors = remoteErrors
     }
+
+    /// The most attempts of one item name that ever ran at the same time.
+    var maxSameName: Int { state.withLock { $0.maxSameName } }
+    var runningTotal: Int { state.withLock { $0.running.values.reduce(0, +) } }
 
     /// Behaviours for successive attempts of `name`; the last one repeats. Default: succeed.
     func script(_ name: String, _ behaviors: Behavior...) { state.withLock { $0.behaviors[name] = behaviors } }
@@ -64,12 +74,19 @@ final class FakeEngine: TransferEngine {
             state.running[request.serial, default: 0] += 1
             state.peak[request.serial] = max(state.peak[request.serial, default: 0], state.running[request.serial, default: 0])
             state.lastEvents = events
+            state.runningByName[request.sourcePath, default: 0] += 1
+            state.maxSameName = max(state.maxSameName, state.runningByName[request.sourcePath, default: 0])
             guard var queue = state.behaviors[request.name], !queue.isEmpty else { return .succeed([]) }
             let next = queue.count > 1 ? queue.removeFirst() : queue[0]
             state.behaviors[request.name] = queue
             return next
         }
-        defer { state.withLock { $0.running[request.serial, default: 0] -= 1 } }
+        defer {
+            state.withLock { state in
+                state.running[request.serial, default: 0] -= 1
+                state.runningByName[request.sourcePath, default: 0] -= 1
+            }
+        }
         switch behavior {
         case .succeed(let list):
             list.forEach(events)
@@ -79,6 +96,11 @@ final class FakeEngine: TransferEngine {
             throw error
         case .untilCancelled:
             while !Task.isCancelled { try await Task.sleep(for: .milliseconds(2)) }
+            throw CancellationError()
+        case .lingerAfterCancel(let linger):
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(2)) }
+            let end = ContinuousClock.now + linger
+            while ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(5)) } // ignores cancellation
             throw CancellationError()
         case .stream(let count, let size, let step, let gate):
             for _ in 0..<count {
@@ -92,7 +114,10 @@ final class FakeEngine: TransferEngine {
         return result
     }
 
-    func remoteExists(serial: String, path: String) async -> Bool { remoteExisting.contains(path) }
+    func remoteExists(serial: String, path: String) async throws -> Bool {
+        if remoteErrors.contains(path) { throw AdbError.timeout }
+        return remoteExisting.contains(path)
+    }
 }
 
 private func download(_ name: String, serial: String = "A", to folder: String = "/tmp/adbfiles-none") -> TransferRequest {
@@ -296,7 +321,7 @@ struct TransferQueueTests {
                 result.failures = ["x.bin": "denied"]
                 return result
             }
-            func remoteExists(serial: String, path: String) async -> Bool { false }
+            func remoteExists(serial: String, path: String) async throws -> Bool { false }
         }
         let queue = TransferQueue(engine: PartialEngine())
         queue.enqueue([TransferRequest(direction: .download, serial: "A", sourcePath: "/sdcard/DCIM", isFolder: true, targetFolder: "/tmp/none")])
@@ -317,6 +342,63 @@ struct TransferQueueTests {
         queue.enqueue([request])
         try await waitUntil { queue.items[0].state.isFinal }
         #expect(engine.destinations == [folder.appendingPathComponent("a 2.txt").path])
+    }
+
+    @Test func retryWaitsForThePreviousAttemptToEnd() async throws {
+        let engine = FakeEngine()
+        engine.script("a.txt", .lingerAfterCancel(.milliseconds(150)), .succeed([]))
+        let queue = TransferQueue(engine: engine)
+        queue.enqueue([upload("a.txt")])
+        try await waitUntil { engine.started.count == 1 }
+        queue.cancel(queue.items[0].id)
+        queue.retry(queue.items[0].id) // the first attempt is still winding down
+        try await waitUntil { queue.items[0].state == .done(copied: 1, skipped: 0) }
+        #expect(queue.items[0].state == .done(copied: 1, skipped: 0), "state: \(queue.items[0].state), started: \(engine.started)")
+        #expect(engine.maxSameName == 1, "two attempts of one item never run at once")
+    }
+
+    @Test func retryAfterOthersTookTheNameGetsANewName() async throws {
+        let engine = FakeEngine(gates: ["g"])
+        engine.script("a.txt", .untilCancelled, .gated("g"), .succeed([]))
+        let queue = TransferQueue(engine: engine)
+        queue.enqueue([upload("a.txt")])
+        try await waitUntil { engine.started.count == 1 }
+        let first = queue.items[0].id
+        queue.cancel(first)
+        try await waitUntil { engine.runningTotal == 0 } // the cancelled attempt has really ended
+        queue.enqueue([upload("a.txt")])                   // takes "a.txt" again while it runs (gated)
+        try await waitUntil { engine.started.count == 2 }
+        queue.retry(first)
+        try await waitUntil { engine.started.count == 3 }
+        let destinations = engine.destinations
+        #expect(destinations[1] == "/sdcard/Download/a.txt")
+        #expect(destinations[2] == "/sdcard/Download/a 2.txt", "Retry must not reuse a name another item now holds")
+        await engine.gates["g"]?.open()
+    }
+
+    @Test func cancelledButStillRunningAttemptKeepsItsName() async throws {
+        let engine = FakeEngine()
+        engine.script("a.txt", .lingerAfterCancel(.milliseconds(200)), .succeed([]))
+        let queue = TransferQueue(engine: engine)
+        queue.enqueue([upload("a.txt")])
+        try await waitUntil { engine.started.count == 1 }
+        queue.cancel(queue.items[0].id)  // marked cancelled, but its task is still writing for 200 ms
+        queue.enqueue([upload("a.txt")])
+        try await waitUntil { engine.started.count == 2 }
+        #expect(engine.destinations == ["/sdcard/Download/a.txt", "/sdcard/Download/a 2.txt"])
+    }
+
+    @Test func unknownRemoteExistenceFailsInsteadOfOverwriting() async throws {
+        let engine = FakeEngine(remoteErrors: ["/sdcard/Download/a.txt"])
+        let queue = TransferQueue(engine: engine)
+        queue.enqueue([upload("a.txt")])
+        try await waitUntil { queue.items[0].state.isFinal }
+        #expect(engine.started.isEmpty)
+        guard case .failed(let message, true) = queue.items[0].state else {
+            Issue.record("expected a retryable failure, got \(queue.items[0].state)")
+            return
+        }
+        #expect(message.hasPrefix("Couldn’t check the destination"))
     }
 
     @Test func activeSummaryCombinesRunningTransfers() async throws {

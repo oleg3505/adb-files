@@ -107,7 +107,18 @@ public actor AdbTransferSession {
                     throw AdbError.localIOError("cannot read \(source.lastPathComponent): \(error.localizedDescription)")
                 }
                 if chunk.isEmpty { break }
-                try await connection.sendRaw(SyncProtocol.encodeData(chunk), timeout: self.inactivity)
+                do {
+                    try await connection.sendRaw(SyncProtocol.encodeData(chunk), timeout: self.inactivity)
+                } catch AdbError.connectionClosed {
+                    // adbd may reject a SEND (no space, unwritable folder) while data is still streaming; its FAIL
+                    // is already waiting, so report that reason instead of "connection closed".
+                    if let header = try? await connection.readExactly(8, timeout: .seconds(1)),
+                       let length = try? SyncProtocol.parseStatusHeader(header),
+                       let message = try? await connection.readExactly(length, timeout: .seconds(1)) {
+                        throw AdbError.serverFailure(String(decoding: message, as: UTF8.self))
+                    }
+                    throw AdbError.connectionClosed
+                }
                 progress(chunk.count)
             }
             let seconds = UInt32(clamping: Int64(mtime.timeIntervalSince1970))
@@ -164,8 +175,16 @@ public actor AdbTransferSession {
                 at: localRoot.appendingPathComponent(entry.relativePath), withIntermediateDirectories: true
             )
         }
+        // Android paths are case-sensitive, APFS usually is not: `IMG.jpg` and `img.jpg` would be one file.
+        var claimed: [String: String] = [:]
         for entry in entries where !entry.file.isDirectory {
             try Task.checkCancellation()
+            let key = entry.relativePath.precomposedStringWithCanonicalMapping.lowercased()
+            if let other = claimed[key] {
+                result.failures[entry.relativePath] = "Same name as “\(other)” on this Mac (names differ only in case)."
+                continue
+            }
+            claimed[key] = entry.relativePath
             let target = localRoot.appendingPathComponent(entry.relativePath)
             if let info = TransferIO.fileInfo(target), info.size == entry.file.size,
                let remoteDate = entry.file.modificationDate,
@@ -206,7 +225,27 @@ public actor AdbTransferSession {
             entry.isDirectory && !filesByFolder.contains { $0 == entry.relativePath || $0.hasPrefix(entry.relativePath + "/") }
         }
         let foldersToMake = [root] + emptyFolders.map { RemotePath.join(root, $0.relativePath) }
-        _ = try await AdbShell.run(AdbShell.command("mkdir -p", foldersToMake), serial: serial, client: host)
+        // Batches keep each shell request far below the 64 KiB host-request limit; the echoed marker reports failure
+        // (the `shell:` service has no exit status).
+        var batches: [[String]] = [[]]
+        var batchBytes = 0
+        for folder in foldersToMake {
+            if batchBytes + folder.utf8.count > 8_000, let last = batches.last, !last.isEmpty {
+                batches.append([])
+                batchBytes = 0
+            }
+            batches[batches.count - 1].append(folder)
+            batchBytes += folder.utf8.count + 3
+        }
+        for batch in batches where !batch.isEmpty {
+            let output = try await AdbShell.run(AdbShell.command("mkdir -p", batch) + " && echo ok || echo fail", serial: serial, client: host)
+            if output.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("fail") {
+                for folder in batch {
+                    let relative = folder == root ? "." : String(folder.dropFirst(root.count + 1))
+                    result.failures[relative] = "Could not create the folder on the device."
+                }
+            }
+        }
 
         for entry in entries where !entry.isDirectory {
             try Task.checkCancellation()

@@ -8,7 +8,9 @@ import Testing
 private let serial = ProcessInfo.processInfo.environment["ADB_TEST_SERIAL"] ?? ""
 private let writesAllowed = ProcessInfo.processInfo.environment["ADB_TEST_WRITE"] == "1"
 /// The only folder these tests may write to on the device; removed after every test.
-private let testFolder = "/sdcard/Download/AdbFilesTest"
+private let approvedRoot = "/sdcard/Download/AdbFilesTest"
+/// Each live suite writes to its own subfolder, because suites run in parallel.
+private let testFolder = approvedRoot + "/queue"
 
 private func sha1(_ url: URL) throws -> String {
     var hasher = Insecure.SHA1()
@@ -38,6 +40,7 @@ struct LiveTransferQueueTests {
         do { try await body(local) } catch { failure = error }
         try? FileManager.default.removeItem(at: local)
         _ = try? await AdbShell.run(AdbShell.command("rm -r", [testFolder]), serial: serial)
+    _ = try? await AdbShell.run(AdbShell.command("rmdir", [approvedRoot]) + " 2>/dev/null", serial: serial) // only if empty
         let check = try await AdbShell.run("ls -d \(AdbShell.quote(testFolder)) 2>/dev/null || echo gone", serial: serial)
         #expect(check.trimmingCharacters(in: .whitespacesAndNewlines) == "gone", "device test folder must be removed")
         if let failure { throw failure }

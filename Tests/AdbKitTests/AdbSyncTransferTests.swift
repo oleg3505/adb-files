@@ -302,7 +302,35 @@ struct AdbSyncTransferTests {
         #expect(result.copied == 2)
         #expect(result.failures.keys.sorted() == ["locked.bin"])
         #expect(device.received.withLock { $0["/sdcard/Фото/inner/b.bin"]?.data } == payload(20))
-        #expect(device.log.withLock { $0 }.contains("shell:mkdir -p '/sdcard/Фото' '/sdcard/Фото/empty'"))
+        #expect(device.log.withLock { $0 }.contains("shell:mkdir -p '/sdcard/Фото' '/sdcard/Фото/empty' && echo ok || echo fail"))
+    }
+
+    @Test func failedMkdirIsRecordedNotSilent() async throws {
+        let (client, server) = try await makeClient(FakeDevice(shellReply: "fail\n"))
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let root = dir.appendingPathComponent("only-empty")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("e"), withIntermediateDirectories: true)
+        let session = try await client.openTransferSession()
+        let result = try await session.uploadFolder(root, to: "/system/x", entries: try TransferIO.walkLocal(root)) { _ in }
+        await session.close()
+        #expect(result.failures.keys.sorted() == [".", "e"])
+    }
+
+    @Test func caseOnlyNameClashIsAFailureNotAnOverwrite() async throws {
+        let device = FakeDevice(listings: ["/r": ["IMG.jpg", "img.jpg"]], files: ["/r/IMG.jpg": payload(10, seed: 1), "/r/img.jpg": payload(20, seed: 2)])
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let root = dir.appendingPathComponent("r")
+        let session = try await client.openTransferSession()
+        let result = try await session.downloadFolder("/r", into: root, entries: try await session.walk("/r")) { _ in }
+        await session.close()
+        #expect(result.copied == 1)
+        #expect(result.failures.count == 1)
+        #expect(try Data(contentsOf: root.appendingPathComponent("IMG.jpg")) == payload(10, seed: 1), "the first file is not overwritten")
     }
 
     @Test func disconnectEndsTransferPromptly() async throws {

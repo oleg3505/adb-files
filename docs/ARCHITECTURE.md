@@ -65,7 +65,7 @@ permission bits allow, e.g. `/storage/emulated`).
     test seam; `AdbTransferEngine` runs one `AdbTransferSession` per item.
   - `Transfers/TransfersButton`, `TransfersPopover`, `TransferRow`, `TransferStatusBar` — toolbar ring +
     badge, list with cancel/retry/show in Finder, bottom bar with combined progress.
-  - `Transfers/TransferActions`, `App/TransferCommands` — File › Download To… (⌥⌘D), Upload… (⌘U).
+  - `Transfers/TransferActions`, `App/TransferCommands` — File › Download To… (⇧⌘D), Upload… (⌘U).
 - `AppKitBridges/FilePromiseDelegate` — `NSFilePromiseProvider` delegate: enqueues the download on drop,
   writes to Finder's exact URL, calls Finder's completion when the transfer ends.
 - `AppKitBridges/FileTableView` — drag rows out (file promises) and accept Finder drops on the table or a

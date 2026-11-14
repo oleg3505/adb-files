@@ -30,7 +30,7 @@ mid-transfer, no partial files left behind).
     with Retry; "keep both" naming (`name 2.ext`) on name conflicts in both directions; refresh the folder
     after uploads.
   - UI: toolbar Transfers button with an active-count badge and a popover (progress, speed, ETA, cancel,
-    retry, reveal in Finder); File menu "Download To…" (⌥⌘D) and "Upload…" (⌘U); drag rows out to Finder
+    retry, reveal in Finder); File menu "Download To…" (⇧⌘D) and "Upload…" (⌘U); drag rows out to Finder
     via `NSFilePromiseProvider` (download starts on drop); drop files/folders from Finder onto the table
     (current folder) or onto a folder row (into that folder).
 - **out (explicit):**
@@ -76,7 +76,7 @@ mid-transfer, no partial files left behind).
 |---|----------|-------------------|----------------|
 | 1 | May verification write to the phone? | Yes: `/sdcard/Download/AdbFilesTest/`, deleted afterwards | answered |
 | 2 | Folders in M4? | Yes, recursive both ways | answered |
-| 3 | Shortcuts | ⌥⌘D Download To…, ⌘U Upload… (Finder has no equivalents) | no |
+| 3 | Shortcuts | ⇧⌘D Download To…, ⌘U Upload… (Finder has no equivalents) | no |
 
 ## Verification notes (2026-11-14)
 - AC1 partial: downloads of files and recursive folders are verified byte-identical with preserved mtimes by
