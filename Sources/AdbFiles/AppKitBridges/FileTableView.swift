@@ -82,6 +82,7 @@ struct FileTableView: NSViewRepresentable {
         table.doubleAction = #selector(Coordinator.doubleClicked(_:))
         table.action = #selector(Coordinator.clicked(_:))
         let menu = NSMenu()
+        menu.autoenablesItems = false // honour each item's isEnabled (e.g. Quick Look until milestone 6)
         menu.delegate = context.coordinator
         table.menu = menu
         table.onOpenSelection = { [weak coordinator = context.coordinator] in coordinator?.openSelection() }
@@ -132,11 +133,13 @@ struct FileTableView: NSViewRepresentable {
         private let icons = IconCache()
         /// Path being edited inline, and whether Esc ended the edit.
         private var editing: String?
+        /// The field being edited; only its own end-of-editing commits, and only for `editing`.
+        private weak var editingField: NSTextField?
         private var editCancelled = false
         /// Rows dragged inside this table (for move/copy onto a folder row).
         private var draggedPaths: [String] = []
         /// Finder's "slow click on a selected name starts rename".
-        private var lastClickedRow = -1
+        private var lastClickedPath: String?
         private var pendingRename: Task<Void, Never>?
 
         func update(with parent: FileTableView) {
@@ -147,6 +150,8 @@ struct FileTableView: NSViewRepresentable {
 
             // Never reload under an inline edit: the field would be recycled mid-typing.
             if parent.rowsVersion != version, editing == nil {
+                lastClickedPath = nil // a slow click must not survive a reload or folder change
+                pendingRename?.cancel()
                 let clock = ContinuousClock()
                 let started = clock.now
                 rows = parent.rows
@@ -176,11 +181,14 @@ struct FileTableView: NSViewRepresentable {
 
         private func syncEditing(with path: String?, in table: NSTableView) {
             guard path != editing else { return }
+            // Whatever comes next, end a live edit first without committing it to another row.
+            abortCurrentEdit()
             if let path, let row = rows.firstIndex(where: { $0.id == path }) {
                 table.scrollRowToVisible(row)
                 guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView,
                       let field = cell.textField else { return }
                 editing = path
+                editingField = field
                 editCancelled = false
                 field.isEditable = true
                 field.delegate = self
@@ -190,14 +198,17 @@ struct FileTableView: NSViewRepresentable {
                 let stemLength = name.pathExtension.isEmpty || rows[row].file.isDirectory
                     ? name.length : name.length - name.pathExtension.count - 1
                 field.currentEditor()?.selectedRange = NSRange(location: 0, length: max(0, stemLength))
-            } else if path == nil, let current = editing, let row = rows.firstIndex(where: { $0.id == current }),
-                      let field = (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? NSTableCellView)?.textField {
-                editing = nil
-                field.abortEditing()
-                field.isEditable = false
-            } else {
-                editing = nil
             }
+        }
+
+        /// Ends the current inline edit without committing (the store already moved on).
+        private func abortCurrentEdit() {
+            guard let field = editingField, let path = editing else { editing = nil; editingField = nil; return }
+            editing = nil
+            editingField = nil
+            field.abortEditing()
+            field.isEditable = false
+            field.stringValue = (path as NSString).lastPathComponent
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -215,14 +226,16 @@ struct FileTableView: NSViewRepresentable {
         }
 
         private func finishEditing(_ field: NSTextField?) {
-            guard let path = editing else { return }
+            // Only the field we started editing may commit, and only for the path it was started for.
+            guard let path = editing, let field, field === editingField else { return }
             editing = nil
-            field?.isEditable = false
+            editingField = nil
+            field.isEditable = false
             if editCancelled {
-                field?.stringValue = (path as NSString).lastPathComponent
+                field.stringValue = (path as NSString).lastPathComponent
                 parent?.actions.cancelRename()
             } else {
-                parent?.actions.commitRename(path, field?.stringValue ?? "")
+                parent?.actions.commitRename(path, field.stringValue)
             }
             table?.window?.makeFirstResponder(table)
             // Rows may have changed while editing; apply them now.
@@ -231,14 +244,16 @@ struct FileTableView: NSViewRepresentable {
 
         @objc func clicked(_ sender: NSTableView) {
             let row = sender.clickedRow
-            defer { lastClickedRow = row }
+            let path = rows.indices.contains(row) ? rows[row].id : nil
+            defer { lastClickedPath = path }
             pendingRename?.cancel()
-            guard row >= 0, row == lastClickedRow, sender.clickedColumn == 0, sender.selectedRowIndexes == [row],
-                  parent?.actions.canOperate == true, rows.indices.contains(row) else { return }
-            let path = rows[row].id
+            guard let path, path == lastClickedPath, sender.clickedColumn == 0, sender.selectedRowIndexes == [row],
+                  parent?.actions.canOperate == true else { return }
             pendingRename = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.2))
-                guard !Task.isCancelled, let self, self.lastClickedRow == row else { return }
+                guard !Task.isCancelled, let self, let table = self.table, self.lastClickedPath == path,
+                      table.selectedRowIndexes.count == 1, let selected = table.selectedRowIndexes.first,
+                      self.rows.indices.contains(selected), self.rows[selected].id == path else { return }
                 self.parent?.actions.beginRename(path)
             }
         }
@@ -391,7 +406,7 @@ struct FileTableView: NSViewRepresentable {
 
         @objc func doubleClicked(_ sender: NSTableView) {
             pendingRename?.cancel()
-            lastClickedRow = -1
+            lastClickedPath = nil
             let row = sender.clickedRow
             guard rows.indices.contains(row) else { return }
             parent?.onOpen(rows[row])

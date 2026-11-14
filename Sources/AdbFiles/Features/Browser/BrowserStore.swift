@@ -170,7 +170,7 @@ final class BrowserStore {
     var canOperate: Bool { busy == nil && operations != nil }
 
     func beginRename(_ path: String) {
-        guard canOperate, rows.contains(where: { $0.id == path }) else { return }
+        guard canOperate, editingPath == nil, rows.contains(where: { $0.id == path }) else { return }
         editingPath = path
         Logger.ui.info("rename begin path=\(path, privacy: .public)")
     }
@@ -207,7 +207,7 @@ final class BrowserStore {
 
     /// Creates `untitled folder` (or the next free number, case-insensitively) and starts renaming it.
     func newFolder() {
-        guard let operations else { return }
+        guard let operations, editingPath == nil else { return }
         let name = Self.uniqueName("untitled folder", taken: Set(rows.map { $0.name.lowercased() }))
         let target = RemotePath.join(path, name)
         run("mkdir", affected: [path]) {
@@ -294,7 +294,8 @@ final class BrowserStore {
         let serial = self.serial
         Task {
             let outcome = await work()
-            for folder in affected { await cache.remove(serial: serial, path: RemotePath.normalized(folder)) }
+            // Also forget listings below them (a renamed/moved/deleted folder's subfolders are stale too).
+            for folder in affected { await cache.removeTree(serial: serial, path: RemotePath.normalized(folder)) }
             self.finishOperation(op, count: count, outcome: outcome, affected: affected, folderAtStart: folderAtStart, started: started)
         }
     }

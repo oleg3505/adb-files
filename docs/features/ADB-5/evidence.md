@@ -36,6 +36,21 @@ folder was removed afterwards (`ls -d …` → gone). No command targeted a path
 - Test fakes: `rm` failed a whole batch where toybox fails per path; the new-folder test's refreshed listing lacked
   the new folder (timing-dependent failure 6/15 → 0/20).
 
+### Self-review
+- `code-reviewer` on `main..HEAD`: 1 blocking, 4 should-fix, 4 nits — fixed (nit 1 noted):
+  - Blocking: starting a rename on another row (or ⌘⇧N) while editing renamed the wrong file / lost the edit. The
+    table now commits only from the field it started editing and aborts a live edit before starting another; the
+    store refuses `beginRename`/`newFolder` while editing and the menus disable them
+    (`whileEditingNoOtherRenameOrNewFolderRetargetsTheEdit`; mutation check: removing the guard fails it).
+  - Context menu ignored `isEnabled` (`autoenablesItems`) → disabled items now look and act disabled.
+  - Slow-click rename keyed by row index → keyed by path, reset on reload, re-checks the selection before starting.
+  - `cp -a`/`mv` had a 120 s total limit → 30 min, and any copy/move error now says a partial result may remain.
+  - Path-bar drops ignored "one operation at a time" → refused while busy.
+  - Nits: descendants' listings invalidated too (`removeTree`, test `removeTreeForgetsDescendantsOnly`); unreadable
+    Finder items logged; v1-STAT caveat documented. Not changed: the path bar decides copy from the ⌥ key state at
+    drop time (SwiftUI `onDrop` does not expose the negotiated operation) — an AppKit drop view would fix it later.
+- After fixes: 208 tests, 20× → 0 failures; live file-op and device suites pass; test folder removed.
+
 ### Environment observation (not a code change)
 - For ~15 minutes four unrelated network tests failed with `NWError 48 EADDRINUSE` in the full parallel suite, also
   on committed code that had passed 40/40 an hour earlier; isolated runs, `--no-parallel`, a minimal

@@ -220,6 +220,18 @@ struct FileOperationsStoreTests {
         listing.release("/sdcard")
     }
 
+    @Test func whileEditingNoOtherRenameOrNewFolderRetargetsTheEdit() async throws {
+        let ops = FakeOperations()
+        let (store, _) = try await loaded([file("a"), file("b")], ops: ops)
+        store.beginRename("/sdcard/a")
+        store.beginRename("/sdcard/b")
+        #expect(store.editingPath == "/sdcard/a", "a second rename must not take over the live edit")
+        store.newFolder()
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(store.editingPath == "/sdcard/a")
+        #expect(ops.calls.isEmpty, "no folder is created while a name is being edited")
+    }
+
     @Test func copyPathsOnePerLine() async throws {
         let (store, _) = try await loaded([file("a")], ops: FakeOperations())
         #expect(store.pathsText(["/sdcard/a", "/sdcard/Б в.txt"]) == "/sdcard/a\n/sdcard/Б в.txt")

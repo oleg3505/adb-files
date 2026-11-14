@@ -11,6 +11,8 @@ struct BreadcrumbBar: View {
     let navigate: (String) -> Void
     /// Rows being dragged from this browser's table, if any.
     var draggingPaths: [String] = []
+    /// Whether a move/copy may start now (one operation at a time).
+    var canOperate = true
     /// Moves (or, with ⌥, copies) the dragged rows into a folder.
     var moveRows: (_ paths: [String], _ folder: String, _ copy: Bool) -> Void = { _, _, _ in }
     /// Uploads Finder items into a folder.
@@ -77,7 +79,8 @@ struct BreadcrumbBar: View {
 
     /// Dragged rows may not go into the folder they are already in, nor into themselves or a descendant.
     private func acceptsDrop(on folder: String) -> Bool {
-        guard !draggingPaths.isEmpty else { return true } // Finder items: always accepted
+        guard !draggingPaths.isEmpty else { return true } // Finder items go to the transfer queue
+        guard canOperate else { return false }
         return draggingPaths.allSatisfy { dragged in
             RemotePath.parent(of: dragged) != folder && folder != dragged && !folder.hasPrefix(dragged + "/")
         }
@@ -99,9 +102,13 @@ struct BreadcrumbBar: View {
         Task { @MainActor in
             var urls: [URL] = []
             for provider in fileProviders {
-                if let url = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? Data,
-                   let fileURL = URL(dataRepresentation: url, relativeTo: nil) {
-                    urls.append(fileURL)
+                do {
+                    if let data = try await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? Data,
+                       let fileURL = URL(dataRepresentation: data, relativeTo: nil) {
+                        urls.append(fileURL)
+                    }
+                } catch {
+                    Logger.ui.error("drop item unreadable: \(error.localizedDescription, privacy: .public)")
                 }
             }
             if !urls.isEmpty { upload(urls, folder) }

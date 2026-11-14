@@ -5,7 +5,7 @@ import AppKit
 @MainActor
 enum ContextMenu {
     static func items(clicked: FileRow?, selection: [FileRow], store: BrowserStore, queue: TransferQueue) -> [NSMenuItem] {
-        let canOperate = store.canOperate
+        let canOperate = store.canOperate && store.editingPath == nil
         guard clicked != nil, !selection.isEmpty else {
             return [
                 ClosureMenuItem("New Folder", enabled: canOperate) { store.newFolder() },

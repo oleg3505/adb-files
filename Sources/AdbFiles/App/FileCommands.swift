@@ -9,11 +9,11 @@ struct FileCommands: Commands {
             Divider()
             Button("New Folder") { browser?.newFolder() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
-                .disabled(!(browser?.canOperate ?? false))
+                .disabled(!(browser?.canOperate ?? false) || browser?.editingPath != nil)
             Button("Rename") {
                 if let browser, let path = browser.selection.first { browser.beginRename(path) }
             }
-            .disabled(!(browser?.canOperate ?? false) || browser?.selection.count != 1)
+            .disabled(!(browser?.canOperate ?? false) || browser?.selection.count != 1 || browser?.editingPath != nil)
             Button("Delete…") {
                 if let browser { browser.requestDelete(browser.selectedRows.map(\.id)) }
             }

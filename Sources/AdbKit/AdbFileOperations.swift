@@ -111,9 +111,13 @@ public struct AdbFileOperations: Sendable {
                 if names.contains(where: { $0.lowercased() == name.lowercased() }) { throw AdbError.alreadyExists(target) }
                 let command = copy ? AdbShell.command("cp -a -n -T --", [source, target]) : AdbShell.command("mv -n -T --", [source, target])
                 do {
-                    try await shell(command, timeout: .seconds(120))
-                } catch AdbError.operationFailed(let message) where copy {
-                    throw AdbError.operationFailed(message + "\nA partial copy may remain at \(target).")
+                    // Big trees take long and print nothing until done; allow up to 30 minutes.
+                    try await shell(command, timeout: .seconds(30 * 60))
+                } catch {
+                    let reason = Self.adbError(error).localizedDescription
+                    throw AdbError.operationFailed(copy
+                        ? "\(reason)\nA partial copy may remain at \(target)."
+                        : "\(reason)\nThe move may be incomplete; refresh both folders to check.")
                 }
                 let targetInfo = try await client.lstat(target)
                 let sourceAfter = try await client.lstat(source)
@@ -154,7 +158,8 @@ public struct AdbFileOperations: Sendable {
                 batchError = Self.adbError(error)
             }
             for path in batch {
-                // A path counts as deleted only if it is really gone.
+                // A path counts as deleted only if it is really gone. (Devices without stat_v2 report any failed
+                // stat as 2, so there an unreadable leftover would also read as gone; current devices use LST2.)
                 if let info = try? await client.lstat(path), info.errorCode == 2 {
                     results[path] = .success(())
                 } else {

@@ -29,4 +29,10 @@ actor ListingCache {
     func remove(serial: String, path: String) {
         listings[Key(serial: serial, path: path)] = nil
     }
+
+    /// Removes `path` and every cached folder below it.
+    func removeTree(serial: String, path: String) {
+        let prefix = path == "/" ? "/" : path + "/"
+        listings = listings.filter { key, _ in key.serial != serial || (key.path != path && !key.path.hasPrefix(prefix)) }
+    }
 }

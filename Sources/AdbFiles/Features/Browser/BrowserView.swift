@@ -41,6 +41,7 @@ struct BrowserView: View {
             BreadcrumbBar(
                 path: store.path, navigate: { store.navigate(to: $0, action: "breadcrumb") },
                 draggingPaths: store.draggingPaths,
+                canOperate: store.canOperate,
                 moveRows: { paths, folder, copy in store.transfer(paths, into: folder, copy: copy) },
                 uploadFiles: { urls, folder in upload(urls, into: folder, store: store) }
             )

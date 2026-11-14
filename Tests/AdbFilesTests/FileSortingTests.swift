@@ -77,6 +77,20 @@ struct ListingCacheTests {
         #expect(await cache.store([file("b"), file("a", size: 2)], serial: "S", path: "/x") == true)
     }
 
+    @Test func removeTreeForgetsDescendantsOnly() async {
+        let cache = ListingCache()
+        for path in ["/sdcard/A", "/sdcard/A/B", "/sdcard/A/B/C", "/sdcard/AB", "/sdcard"] {
+            await cache.store([file("x")], serial: "S", path: path)
+        }
+        await cache.store([file("x")], serial: "T", path: "/sdcard/A/B")
+        await cache.removeTree(serial: "S", path: "/sdcard/A")
+        #expect(await cache.cached(serial: "S", path: "/sdcard/A") == nil)
+        #expect(await cache.cached(serial: "S", path: "/sdcard/A/B/C") == nil)
+        #expect(await cache.cached(serial: "S", path: "/sdcard/AB") != nil, "sibling with a common prefix stays")
+        #expect(await cache.cached(serial: "S", path: "/sdcard") != nil)
+        #expect(await cache.cached(serial: "T", path: "/sdcard/A/B") != nil, "other devices are untouched")
+    }
+
     @Test func keysByDeviceAndPath() async {
         let cache = ListingCache()
         await cache.store([file("a")], serial: "S1", path: "/x")
