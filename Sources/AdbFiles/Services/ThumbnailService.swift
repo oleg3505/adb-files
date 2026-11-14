@@ -63,7 +63,7 @@ actor ThumbnailService {
         let diskURL = directory.appendingPathComponent(key + ".png")
         if let data = try? Data(contentsOf: diskURL) {
             remember(key, data)
-            Logger.ui.debug("thumb source=disk path=\(file.path, privacy: .public)")
+            Logger.ui.info("thumb source=disk path=\(file.path, privacy: .public)")
             return data
         }
         if let existing = inflight[key] {

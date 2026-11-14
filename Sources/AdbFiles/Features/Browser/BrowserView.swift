@@ -17,6 +17,8 @@ struct BrowserView: View {
     @State private var store: BrowserStore?
     @State private var preview: PreviewController?
     @State private var presenter: QuickLookPanelPresenter?
+    @State private var thumbnails: ThumbnailBinder?
+    @AppStorage(RowSize.storageKey) private var rowSize: RowSize = .small
 
     var body: some View {
         Group {
@@ -59,7 +61,9 @@ struct BrowserView: View {
                     onDropFiles: { urls, folder in upload(urls, into: folder?.file.path ?? store.path, store: store) },
                     editingPath: store.editingPath,
                     actions: tableActions(store),
-                    preview: presenter
+                    preview: presenter,
+                    rowSize: rowSize,
+                    thumbnails: thumbnails
                 )
                 .overlay {
                     if store.phase == .empty {
@@ -203,6 +207,12 @@ struct BrowserView: View {
         )
         newPresenter.onClose = { [weak newPreview] in newPreview?.panelDidClose() }
         newPresenter.onToggle = { [weak newPreview] in newPreview?.close() }
+        let service = services.thumbnails(for: serial)
+        let binder = ThumbnailBinder(
+            load: { await service.thumbnail(for: $0) },
+            cancel: { file in Task { await service.cancel(file) } }
+        )
+        thumbnails = binder
         presenter = newPresenter
         preview = newPreview
         store = newStore
@@ -212,6 +222,7 @@ struct BrowserView: View {
         }
         let gone = !isDeviceUsable(serial)
         newPreview.cancel()
+        binder.unbindAll() // only this browser's requests: another window may show the same device
         newStore.cancel(reason: gone ? "device-gone" : "device-switch")
         if gone { await client.disconnect() }
     }

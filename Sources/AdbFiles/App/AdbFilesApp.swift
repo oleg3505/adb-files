@@ -25,6 +25,7 @@ struct AdbFilesApp: App {
         }
         .commands {
             BrowserCommands()
+            ViewCommands()
             TransferCommands(services: services)
             FileCommands()
         }

@@ -35,6 +35,7 @@ final class AppServices {
 
     @ObservationIgnored private let clients: SyncClientRegistry
     @ObservationIgnored private var usableSerials: Set<String> = []
+    @ObservationIgnored private var thumbnailServices: [String: ThumbnailService] = [:]
 
     init() {
         // Quick Look copies are only for this run.
@@ -54,12 +55,21 @@ final class AppServices {
         clients.client(for: serial)
     }
 
+    /// One thumbnail service per device (its own memory cache; reads on the interactive connection).
+    func thumbnails(for serial: String) -> ThumbnailService {
+        if let existing = thumbnailServices[serial] { return existing }
+        let service = ThumbnailService(serial: serial, source: InteractiveThumbnailSource(client: clients.client(for: serial)))
+        thumbnailServices[serial] = service
+        return service
+    }
+
     /// Called whenever the device list changes: transfers of devices that left (or became unusable) fail
     /// with Retry, and their connections are closed.
     func devicesChanged(_ devices: [Device]) {
         let usable = Set(devices.filter { $0.state.isUsable }.map(\.serial))
         for serial in usableSerials.subtracting(usable) {
             transfers.deviceGone(serial)
+            if let thumbnails = thumbnailServices[serial] { Task { await thumbnails.cancelAll() } }
             if let client = clients.existingClient(for: serial) { Task { await client.disconnect() } }
         }
         usableSerials = usable

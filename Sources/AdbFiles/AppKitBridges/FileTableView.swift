@@ -59,6 +59,9 @@ struct FileTableView: NSViewRepresentable {
     var actions = FileTableActions()
     /// Controls the Quick Look panel while this table is first responder.
     var preview: QuickLookPanelPresenter?
+    var rowSize: RowSize = .small
+    /// Thumbnails for visible rows (nil = icons only).
+    var thumbnails: ThumbnailBinder?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -70,7 +73,7 @@ struct FileTableView: NSViewRepresentable {
         table.allowsEmptySelection = true
         table.allowsTypeSelect = true
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-        table.rowHeight = 22
+        table.rowHeight = rowSize.rowHeight
 
         for spec in Coordinator.columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.key.rawValue))
@@ -134,6 +137,7 @@ struct FileTableView: NSViewRepresentable {
         private var rows: [FileRow] = []
         private var version = -1
         private var folderPath: String?
+        private var rowSize: RowSize?
         private var hasLoggedValidate = false
         private var isApplying = false
         private let icons = IconCache()
@@ -158,8 +162,16 @@ struct FileTableView: NSViewRepresentable {
             isApplying = true
             defer { isApplying = false }
 
+            let sizeChanged = parent.rowSize != rowSize
+            if sizeChanged {
+                rowSize = parent.rowSize
+                table.rowHeight = parent.rowSize.rowHeight
+                Logger.ui.info("rowSize=\(parent.rowSize.rawValue, privacy: .public)")
+            }
+            if parent.folderPath != folderPath { parent.thumbnails?.unbindAll() }
+
             // Never reload under an inline edit: the field would be recycled mid-typing.
-            if parent.rowsVersion != version, editing == nil {
+            if (parent.rowsVersion != version || sizeChanged), editing == nil {
                 lastClickedPath = nil // a slow click must not survive a reload or folder change
                 pendingRename?.cancel()
                 let clock = ContinuousClock()
@@ -305,8 +317,14 @@ struct FileTableView: NSViewRepresentable {
             switch SortKey(rawValue: identifier.rawValue) {
             case .name:
                 cell.textField?.stringValue = item.name
+                // A reused cell shows the system icon at once; the thumbnail (if any) replaces it later.
                 cell.imageView?.image = icons.icon(for: item)
                 cell.setAccessibilityLabel("\(item.name), \(item.kind)")
+                if let nameCell = cell as? FileNameCellView {
+                    nameCell.shownPath = item.id
+                    nameCell.setIconSize(rowSize?.iconSize ?? 16)
+                    parent?.thumbnails?.bind(nameCell, to: item.file)
+                }
             case .date:
                 cell.textField?.stringValue = item.dateText
             case .size:
@@ -318,6 +336,14 @@ struct FileTableView: NSViewRepresentable {
             }
             cell.textField?.textColor = item.file.isHidden ? .secondaryLabelColor : .labelColor
             return cell
+        }
+
+        func tableView(_ tableView: NSTableView, didRemove rowView: NSTableRowView, forRow row: Int) {
+            guard let binder = parent?.thumbnails else { return }
+            for case let cell as FileNameCellView in rowView.subviews {
+                binder.unbind(cell)
+                cell.shownPath = nil
+            }
         }
 
         func tableView(_ tableView: NSTableView, typeSelectStringFor tableColumn: NSTableColumn?, row: Int) -> String? {
@@ -429,7 +455,7 @@ struct FileTableView: NSViewRepresentable {
         }
 
         private func makeCell(identifier: NSUserInterfaceItemIdentifier, withIcon: Bool) -> NSTableCellView {
-            let cell = NSTableCellView()
+            let cell = withIcon ? FileNameCellView() : NSTableCellView()
             cell.identifier = identifier
             let text = NSTextField(labelWithString: "")
             text.lineBreakMode = .byTruncatingMiddle
@@ -440,16 +466,19 @@ struct FileTableView: NSViewRepresentable {
                 text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
                 text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
             ]
-            if withIcon {
+            if withIcon, let nameCell = cell as? FileNameCellView {
                 let image = NSImageView()
                 image.translatesAutoresizingMaskIntoConstraints = false
+                image.imageScaling = .scaleProportionallyUpOrDown
                 cell.addSubview(image)
                 cell.imageView = image
+                let width = image.widthAnchor.constraint(equalToConstant: 16)
+                let height = image.heightAnchor.constraint(equalToConstant: 16)
+                nameCell.iconConstraints = [width, height]
                 constraints += [
                     image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
                     image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                    image.widthAnchor.constraint(equalToConstant: 16),
-                    image.heightAnchor.constraint(equalToConstant: 16),
+                    width, height,
                     text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 6),
                 ]
             } else {
@@ -458,6 +487,20 @@ struct FileTableView: NSViewRepresentable {
             NSLayoutConstraint.activate(constraints)
             return cell
         }
+    }
+}
+
+/// The Name column's cell: icon or thumbnail plus the name.
+final class FileNameCellView: NSTableCellView, ThumbnailTarget {
+    var shownPath: String?
+    var iconConstraints: [NSLayoutConstraint] = []
+
+    func setIconSize(_ size: CGFloat) {
+        for constraint in iconConstraints where constraint.constant != size { constraint.constant = size }
+    }
+
+    func showThumbnail(_ image: NSImage) {
+        imageView?.image = image
     }
 }
 
