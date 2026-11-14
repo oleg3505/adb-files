@@ -47,12 +47,25 @@ final class BrowserStore {
         }
     }
 
+    /// Name of the operation running now (one at a time); nil when idle.
+    private(set) var busy: String? {
+        didSet {
+            if let busy { Logger.ui.info("busy begin op=\(busy, privacy: .public)") }
+            else if let oldValue { Logger.ui.info("busy end op=\(oldValue, privacy: .public)") }
+        }
+    }
+    /// An operation error to show.
+    var alert: OperationAlert?
+    /// The row whose name is being edited inline.
+    private(set) var editingPath: String?
+
     var canGoBack: Bool { !backStack.isEmpty }
     var canGoForward: Bool { !forwardStack.isEmpty }
     var canGoUp: Bool { RemotePath.parent(of: path) != nil }
 
     @ObservationIgnored private let listing: any DirectoryListing
     @ObservationIgnored private let cache: ListingCache
+    @ObservationIgnored private let operations: (any FileOperating)?
     @ObservationIgnored private let pipeline: RowPipeline
     @ObservationIgnored private var files: [RemoteFile] = []
     /// Display rows for `files`, built once per listing; sorting and filtering reuse them.
@@ -69,11 +82,12 @@ final class BrowserStore {
 
     init(
         serial: String, listing: any DirectoryListing, cache: ListingCache, startPath: String = BrowserStore.startPath,
-        pipeline: RowPipeline = RowPipeline()
+        pipeline: RowPipeline = RowPipeline(), operations: (any FileOperating)? = nil
     ) {
         self.serial = serial
         self.listing = listing
         self.cache = cache
+        self.operations = operations
         self.pipeline = pipeline
         self.path = RemotePath.normalized(startPath)
     }
@@ -148,6 +162,175 @@ final class BrowserStore {
         loadTask?.cancel()
         loadTask = nil
         generation += 1
+    }
+
+    // MARK: - File operations
+
+    /// Whether an operation may start now.
+    var canOperate: Bool { busy == nil && operations != nil }
+
+    func beginRename(_ path: String) {
+        guard canOperate, rows.contains(where: { $0.id == path }) else { return }
+        editingPath = path
+        Logger.ui.info("rename begin path=\(path, privacy: .public)")
+    }
+
+    func cancelRename() {
+        guard let path = editingPath else { return }
+        editingPath = nil
+        Logger.ui.info("rename cancel path=\(path, privacy: .public)")
+    }
+
+    /// Commits an inline rename. Invalid names and clashes show an alert; the same name does nothing.
+    func commitRename(_ path: String, to newName: String) {
+        editingPath = nil
+        Logger.ui.info("rename commit path=\(path, privacy: .public)")
+        let oldName = (path as NSString).lastPathComponent
+        guard newName != oldName else { return }
+        if let problem = NameValidation.problem(with: newName) {
+            return showAlert(op: "rename", title: "Can’t rename “\(oldName)”", message: problem)
+        }
+        let clash = rows.contains { $0.name != oldName && $0.name.lowercased() == newName.lowercased() }
+        if clash {
+            return showAlert(op: "rename", title: "Can’t rename “\(oldName)”", message: "An item named “\(newName)” already exists here.")
+        }
+        guard let operations else { return }
+        run("rename", affected: [folder(of: path)]) {
+            do {
+                let newPath = try await operations.rename(path, to: newName)
+                return OperationOutcome(select: newPath)
+            } catch {
+                return OperationOutcome(failures: [FailedItem(name: oldName, message: Self.message(error))])
+            }
+        }
+    }
+
+    /// Creates `untitled folder` (or the next free number, case-insensitively) and starts renaming it.
+    func newFolder() {
+        guard let operations else { return }
+        let name = Self.uniqueName("untitled folder", taken: Set(rows.map { $0.name.lowercased() }))
+        let target = RemotePath.join(path, name)
+        run("mkdir", affected: [path]) {
+            do {
+                try await operations.makeDirectory(target)
+                return OperationOutcome(select: target, edit: target)
+            } catch {
+                return OperationOutcome(failures: [FailedItem(name: name, message: Self.message(error))])
+            }
+        }
+    }
+
+    /// Deletes the given paths permanently (the confirmation is the caller's job).
+    func delete(_ paths: [String]) {
+        guard let operations, !paths.isEmpty else { return }
+        run("delete", affected: Set(paths.map(folder(of:))), count: paths.count) {
+            let results = await operations.delete(paths)
+            return OperationOutcome(failures: Self.failures(results))
+        }
+    }
+
+    /// Moves (or copies) paths into a folder on the same device.
+    func transfer(_ paths: [String], into folder: String, copy: Bool) {
+        guard let operations, !paths.isEmpty else { return }
+        let destination = RemotePath.normalized(folder)
+        run(copy ? "copy" : "move", affected: Set(paths.map(folder(of:)) + [destination]), count: paths.count) {
+            let results = copy ? await operations.copy(paths, into: destination) : await operations.move(paths, into: destination)
+            return OperationOutcome(failures: Self.failures(results))
+        }
+    }
+
+    /// The remote paths, one per line (Copy Path).
+    func pathsText(_ paths: [String]) -> String {
+        Logger.ui.info("copy path count=\(paths.count)")
+        return paths.joined(separator: "\n")
+    }
+
+    struct FailedItem: Sendable, Equatable {
+        let name: String
+        let message: String
+    }
+
+    struct OperationOutcome: Sendable {
+        var failures: [FailedItem] = []
+        var select: String?
+        var edit: String?
+    }
+
+    private func folder(of item: String) -> String {
+        RemotePath.parent(of: item) ?? "/"
+    }
+
+    /// Runs one operation at a time. The task is not tied to navigation and is never cancelled by it: whatever
+    /// happens, every affected folder is invalidated and failures are shown; only selection and inline editing
+    /// need the user to still be in the folder where the operation started.
+    private func run(_ op: String, affected: Set<String>, count: Int = 1, _ work: @escaping @Sendable () async -> OperationOutcome) {
+        guard canOperate else {
+            Logger.ui.info("op \(op, privacy: .public) refused busy=\(self.busy ?? "-", privacy: .public)")
+            return
+        }
+        busy = op
+        let folderAtStart = path
+        let started = ContinuousClock.now
+        let cache = self.cache
+        let serial = self.serial
+        Task {
+            let outcome = await work()
+            for folder in affected { await cache.remove(serial: serial, path: RemotePath.normalized(folder)) }
+            self.finishOperation(op, count: count, outcome: outcome, affected: affected, folderAtStart: folderAtStart, started: started)
+        }
+    }
+
+    private func finishOperation(
+        _ op: String, count: Int, outcome: OperationOutcome, affected: Set<String>, folderAtStart: String, started: ContinuousClock.Instant
+    ) {
+        busy = nil
+        Logger.ui.info(
+            "op \(op, privacy: .public) count=\(count) ok=\(count - outcome.failures.count) fail=\(outcome.failures.count) ms=\(Self.milliseconds(ContinuousClock.now - started))"
+        )
+        if !outcome.failures.isEmpty {
+            let lines = outcome.failures.map { "“\($0.name)”: \($0.message)" }.joined(separator: "\n")
+            showAlert(op: op, title: Self.failureTitle(op, count: outcome.failures.count), message: lines)
+        }
+        if path == folderAtStart {
+            if let select = outcome.select { selection = [select] }
+            if let edit = outcome.edit { editingPath = edit }
+        }
+        if affected.contains(path) { refresh() }
+    }
+
+    private func showAlert(op: String, title: String, message: String) {
+        alert = OperationAlert(title: title, message: message)
+        Logger.ui.info("alert op=\(op, privacy: .public) reason=\(message, privacy: .public)")
+    }
+
+    private nonisolated static func failures<T>(_ results: [String: Result<T, AdbError>]) -> [FailedItem] {
+        results.compactMap { path, result -> FailedItem? in
+            guard case .failure(let error) = result else { return nil }
+            return FailedItem(name: (path as NSString).lastPathComponent, message: message(error))
+        }.sorted { $0.name < $1.name }
+    }
+
+    private nonisolated static func message(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+
+    private static func failureTitle(_ op: String, count: Int) -> String {
+        let noun = count == 1 ? "1 item" : "\(count) items"
+        switch op {
+        case "delete": return "Couldn’t delete \(noun)"
+        case "move": return "Couldn’t move \(noun)"
+        case "copy": return "Couldn’t copy \(noun)"
+        case "mkdir": return "Couldn’t create the folder"
+        default: return "Couldn’t rename"
+        }
+    }
+
+    /// `base`, `base 2`, `base 3`, … — the first whose lowercased form is not in `taken`.
+    static func uniqueName(_ base: String, taken: Set<String>) -> String {
+        guard taken.contains(base.lowercased()) else { return base }
+        var number = 2
+        while taken.contains("\(base) \(number)".lowercased()) { number += 1 }
+        return "\(base) \(number)"
     }
 
     // MARK: - Loading
