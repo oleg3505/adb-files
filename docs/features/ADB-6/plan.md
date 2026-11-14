@@ -83,7 +83,7 @@ connection) → `docs/decisions/ADR-001`, landed with the code that introduces i
   `/sdcard/Download/AdbFilesTest/` while browsing thumbnails and pressing Space (folder removed afterwards)
 - **regression (user-assisted, each matched to an existing log line):** drag a row to Finder (`promise write`),
   Finder → table (`drop upload`), row → folder row and ⌥ (`drop op=move|copy`), path-bar drop (`via=breadcrumb`),
-  Return opens (`navigate action=open`), type-select, inline rename with a space in the name (`rename commit`)
+  Return opens (`open path=`), type-select (user-observed; no log line), inline rename with a space in the name (`rename commit`)
 
 ### R5 — Docs (S)
 - `docs/ARCHITECTURE.md`, `README.md` (Space, View menu), spec ticks, `evidence.md`
