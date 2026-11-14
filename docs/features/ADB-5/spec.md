@@ -53,12 +53,17 @@ context menu), goal 3 (reliable: never overwrite silently, clear error messages,
 | Case | Expected behaviour | Decided by |
 |------|--------------------|-----------|
 | Rename to the same name | No-op | assumption |
-| Rename changing only case (`a.txt` → `A.txt`) | Allowed (Android is case-sensitive): `mv` via a temp name is not needed on the device | assumption |
-| Item vanished before the operation | `notFound` message, listing refreshes | assumption |
+| Rename changing only case (`a.txt` → `A.txt`) | `/sdcard` on this device is FUSE and **case-insensitive** (gate: `ls -d /sdcard/download` resolves): done as two `mv -T` via a unique temp name; the exact name is verified with `LIST` of the parent | gate (live read-only check) |
+| Name clash checks, `untitled folder N` numbering | Case-insensitive | gate |
+| `cp -a` fails partway (disk full, timeout) | The partial destination is kept and the message says so (never deleted silently) | gate |
+| Another window shows an affected folder | Refreshes on its next navigation/⌘R (known limit; the shared cache entry is invalidated) | gate |
+| Item vanished before the operation | Source `LST2` first → `notFound` message, listing refreshes | assumption |
+| Navigating away while an operation runs | The operation is not cancelled; its failure alert still shows and every affected folder is invalidated | gate |
+| A second operation while one runs | Not allowed: commands, context menu, drops and rename are disabled while busy | gate |
 | Move a folder into itself or its descendant | Refused before any command runs | Finder |
 | Delete while a transfer uses the item | Allowed; the transfer then fails with Retry (no locking) | assumption |
 | Huge folder delete (thousands of files) | Runs up to 120 s with busy indicator; timeout → error, listing refreshes | assumption |
-| Multiple selection delete/move/copy path | One confirmation / one batch; per-item failures listed | assumption |
+| Multiple selection delete/move/copy | One confirmation / one batch; result per item (`[path: Result]`); the alert lists the failed items | assumption |
 | Symlink rows | Rename/delete/move act on the link itself, never its target | POSIX |
 
 ## Open questions
