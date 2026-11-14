@@ -63,6 +63,8 @@ public struct AdbServerLauncher: Sendable {
         return adb
     }
 
+    private enum RunState: Sendable { case notStarted, running, cancelled }
+
     private static func run(_ executable: URL, arguments: [String]) async throws -> (Int32, String) {
         let process = Process()
         process.executableURL = executable
@@ -71,22 +73,63 @@ public struct AdbServerLauncher: Sendable {
         process.standardOutput = pipe
         process.standardError = pipe
 
+        let state = OSAllocatedUnfairLock(initialState: RunState.notStarted)
+        let output = OSAllocatedUnfairLock(initialState: Data())
+        let reader = pipe.fileHandleForReading
+        // Drain output while the process runs. Reading to EOF after exit could block forever if a child
+        // (the forked adb daemon) inherited the pipe and keeps it open.
+        reader.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+            } else {
+                output.withLock { $0.append(chunk) }
+            }
+        }
+
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Int32, String), Error>) in
                 process.terminationHandler = { finished in
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                    continuation.resume(returning: (finished.terminationStatus, output))
+                    let status = finished.terminationStatus
+                    // Give the readability handler a moment to deliver the last chunk.
+                    DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) {
+                        reader.readabilityHandler = nil
+                        if state.withLock({ $0 == .cancelled }) {
+                            continuation.resume(throwing: CancellationError())
+                            return
+                        }
+                        let text = String(decoding: output.withLock { $0 }, as: UTF8.self)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        continuation.resume(returning: (status, text))
+                    }
                 }
-                do {
-                    try process.run()
-                } catch {
-                    process.terminationHandler = nil
+                let launch: Result<Void, Error>? = state.withLock { state in
+                    guard state == .notStarted else { return nil } // cancelled before launch
+                    do {
+                        try process.run()
+                        state = .running
+                        return .success(())
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+                switch launch {
+                case .success:
+                    break
+                case .failure(let error):
+                    reader.readabilityHandler = nil
                     continuation.resume(throwing: AdbError.serverStartFailed(error.localizedDescription))
+                case nil:
+                    reader.readabilityHandler = nil
+                    continuation.resume(throwing: CancellationError())
                 }
             }
         } onCancel: {
-            process.terminate()
+            state.withLock { state in
+                // Terminating a process that never launched raises an Objective-C exception.
+                if state == .running { process.terminate() }
+                state = .cancelled
+            }
         }
     }
 }

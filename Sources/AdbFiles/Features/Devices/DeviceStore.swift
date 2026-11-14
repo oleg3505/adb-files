@@ -94,24 +94,32 @@ final class DeviceStore {
                 do {
                     try await launcher.startServer()
                     continue // track again right away
-                } catch AdbError.adbNotFound {
-                    apply([])
-                    phase = .adbMissing
-                    return // nothing to retry automatically; the user installs adb and presses Retry
-                } catch is CancellationError {
-                    return
                 } catch {
-                    failures += 1
+                    // A retry() may have replaced this task; never let a stale loop overwrite state.
+                    if Task.isCancelled || error is CancellationError { return }
+                    if case AdbError.adbNotFound = error {
+                        apply([])
+                        phase = .adbMissing
+                        return // nothing to retry automatically; the user installs adb and presses Retry
+                    }
+                    // adb's own output is the most useful diagnostic; keep it on screen for this streak.
+                    failures = max(failures + 1, 3)
                     phase = .failed(error.localizedDescription)
                 }
             } catch is CancellationError {
                 return
             } catch {
+                if Task.isCancelled { return }
                 failures += 1
                 Logger.ui.error("tracking ended: \(error.localizedDescription, privacy: .public)")
                 apply([])
                 // Show an error only after repeated failures; a single server restart should look seamless.
-                phase = failures >= 3 ? .failed(error.localizedDescription) : .connecting
+                // Once the streak shows an error, keep the first message instead of flipping back to a spinner.
+                if case .failed = phase {
+                    // keep the existing message
+                } else {
+                    phase = failures >= 3 ? .failed(error.localizedDescription) : .connecting
+                }
             }
 
             do {

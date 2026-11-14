@@ -115,3 +115,51 @@ struct AdbHostClientTests {
         #expect(clock.now - started < .seconds(2))
     }
 }
+
+@Suite("Cancellation races")
+struct CancellationRaceTests {
+    /// A task that is cancelled before it reaches the operation, so `onCancel` runs before the body.
+    private func preCancelled<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) -> Task<T, Error> {
+        let task = Task {
+            while !Task.isCancelled { await Task.yield() }
+            return try await body()
+        }
+        task.cancel()
+        return task
+    }
+
+    @Test func preCancelledConnectReturnsPromptly() async throws {
+        let server = try await FakeAdbServer.start { _ in }
+        defer { server.stop() }
+        let port = server.port
+        let clock = ContinuousClock()
+        let started = clock.now
+        let task = preCancelled { try await AdbConnection.connect(host: "127.0.0.1", port: port, timeout: .seconds(5)) }
+        await #expect(throws: (any Error).self) { try await task.value }
+        #expect(clock.now - started < .seconds(1))
+    }
+
+    @Test func preCancelledStartServerDoesNotLaunchOrCrash() async throws {
+        // /usr/bin/true would succeed if launched; a pre-cancelled call must not launch it at all.
+        let sut = AdbServerLauncher(environment: ["ADBFILES_ADB_PATH": "/usr/bin/true"])
+        let task = preCancelled { try await sut.startServer() }
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
+    @Test func cancellingRunningStartServerTerminatesProcess() async throws {
+        // `/bin/sleep start-server` exits immediately with an error, so use a script that waits instead.
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("fake-adb-\(UUID().uuidString).sh")
+        try "#!/bin/sh\nsleep 30\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        let sut = AdbServerLauncher(environment: ["ADBFILES_ADB_PATH": script.path])
+        let task = Task { try await sut.startServer() }
+        try await Task.sleep(for: .milliseconds(300))
+        let clock = ContinuousClock()
+        let started = clock.now
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(clock.now - started < .seconds(2))
+    }
+}

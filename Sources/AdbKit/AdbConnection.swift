@@ -6,6 +6,9 @@ import os
 ///
 /// All reads go through an internal `HostMessageDecoder`, so messages split across TCP segments are
 /// reassembled. Cancelling the calling `Task` cancels the underlying socket.
+///
+/// - Important: Run one exchange at a time. Concurrent requests or reads on the same connection share the
+///   receive buffer and would interleave bytes; open another connection instead.
 public actor AdbConnection {
     /// Default ADB server address.
     public static let defaultHost = "127.0.0.1"
@@ -79,20 +82,24 @@ public actor AdbConnection {
         }
     }
 
+    // Each primitive below resumes its continuation from the Network callback OR from `onCancel`,
+    // whichever comes first, so a cancelled task never waits for a callback that may not arrive.
+
     private func waitUntilReady() async throws {
         let connection = self.connection
-        let once = ResumeOnce()
+        let queue = self.queue
+        let box = ContinuationBox<Void>()
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            try await box.wait {
                 connection.stateUpdateHandler = { state in
                     switch state {
                     case .ready:
-                        once.run { continuation.resume() }
+                        box.resume(.success(()))
                     case .waiting(let error), .failed(let error):
                         // A refused TCP connect surfaces as `.waiting(ECONNREFUSED)`, not `.failed`.
-                        once.run { continuation.resume(throwing: Self.map(error)) }
+                        box.resume(.failure(Self.map(error)))
                     case .cancelled:
-                        once.run { continuation.resume(throwing: CancellationError()) }
+                        box.resume(.failure(CancellationError()))
                     default:
                         break
                     }
@@ -100,6 +107,7 @@ public actor AdbConnection {
                 connection.start(queue: queue)
             }
         } onCancel: {
+            box.cancel()
             connection.cancel()
         }
         connection.stateUpdateHandler = nil
@@ -107,42 +115,40 @@ public actor AdbConnection {
 
     private func send(_ data: Data) async throws {
         let connection = self.connection
+        let box = ContinuationBox<Void>()
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            try await box.wait {
                 connection.send(content: data, completion: .contentProcessed { error in
-                    if let error {
-                        continuation.resume(throwing: Self.map(error))
-                    } else {
-                        continuation.resume()
-                    }
+                    box.resume(error.map { .failure(Self.map($0)) } ?? .success(()))
                 })
             }
         } onCancel: {
+            box.cancel()
             connection.cancel()
         }
     }
 
     private func receiveChunk() async throws -> Data {
         let connection = self.connection
-        let data: Data = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+        let box = ContinuationBox<Data>()
+        return try await withTaskCancellationHandler {
+            try await box.wait {
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
                     if let data, !data.isEmpty {
-                        continuation.resume(returning: data)
+                        box.resume(.success(data))
                     } else if let error {
-                        continuation.resume(throwing: Self.map(error))
+                        box.resume(.failure(Self.map(error)))
                     } else if isComplete {
-                        continuation.resume(throwing: AdbError.connectionClosed)
+                        box.resume(.failure(AdbError.connectionClosed))
                     } else {
-                        continuation.resume(returning: Data())
+                        box.resume(.success(Data()))
                     }
                 }
             }
         } onCancel: {
+            box.cancel()
             connection.cancel()
         }
-        try Task.checkCancellation()
-        return data
     }
 
     private static func map(_ error: NWError) -> Error {
@@ -178,7 +184,63 @@ func withTimeout<T: Sendable>(
     }
 }
 
-/// Guards a continuation that may be signalled from several callbacks so it resumes exactly once.
+/// A continuation that can be resumed exactly once, either by a callback or by cancellation.
+///
+/// If `cancel()` runs before `wait` installs the continuation (a task that is already cancelled runs its
+/// `onCancel` first), `wait` throws `CancellationError` without calling `start`.
+final class ContinuationBox<T: Sendable>: Sendable {
+    private enum State: Sendable {
+        case idle
+        case waiting(CheckedContinuation<T, Error>)
+        case cancelled
+        case finished
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State.idle)
+
+    /// Suspends until `resume` or `cancel`. `start` kicks off the callback-based work.
+    func wait(_ start: () -> Void) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            let proceed = state.withLock { state -> Bool in
+                guard case .idle = state else { return false }
+                state = .waiting(continuation)
+                return true
+            }
+            if proceed {
+                start()
+            } else {
+                continuation.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    /// Delivers the result; ignored if the continuation already resumed.
+    func resume(_ result: Result<T, Error>) {
+        take(next: .finished)?.resume(with: result)
+    }
+
+    /// Resumes with `CancellationError`, or makes a later `wait` fail immediately.
+    func cancel() {
+        take(next: .cancelled)?.resume(throwing: CancellationError())
+    }
+
+    private func take(next: State) -> CheckedContinuation<T, Error>? {
+        state.withLock { state in
+            switch state {
+            case .waiting(let continuation):
+                state = .finished
+                return continuation
+            case .idle:
+                if case .cancelled = next { state = .cancelled }
+                return nil
+            case .cancelled, .finished:
+                return nil
+            }
+        }
+    }
+}
+
+/// Guards a callback that may fire several times so `body` runs exactly once.
 final class ResumeOnce: Sendable {
     private let done = OSAllocatedUnfairLock(initialState: false)
 

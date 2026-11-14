@@ -40,3 +40,21 @@ All app lines come from `/usr/bin/log stream|show --info --predicate 'subsystem 
   Moved the store to `AdbFilesApp`.
 - First-list latency up to 1098 ms when launched as a bundle because tracking began on view appear. Tracking now
   starts in `App.init`: 319–487 ms over 5 launches.
+
+### Self-review
+- `code-reviewer` on `main..HEAD`: 0 blocking, 4 should-fix, 3 nits. Fixed:
+  - `startServer` cancelled before launch called `Process.terminate()` on an unlaunched process → crash. Now a locked
+    `notStarted/running/cancelled` state. Regression test `preCancelledStartServerDoesNotLaunchOrCrash`; run against the
+    old code it aborts with `NSInvalidArgumentException: -[NSConcreteTask terminate]: task not launched`; passes now.
+  - Continuations in `AdbConnection` only resumed from Network callbacks, so a pre-cancelled task could hang inside
+    `withTimeout`. New `ContinuationBox` resumes from the callback or `onCancel`, whichever is first. Test
+    `preCancelledConnectReturnsPromptly`.
+  - start-server output now drained with `readabilityHandler` (no blocking read to EOF). Test
+    `cancellingRunningStartServerTerminatesProcess` (script whose `sleep` child keeps the pipe open) returns < 2 s.
+  - `DeviceStore`: a start-server failure stays on screen for the streak instead of flipping back to the spinner;
+    stale loops after `retry()` return without touching state. `AdbConnection` documents one-exchange-at-a-time.
+- After fixes: clean build 0 warnings; `swift test` → 48 passed (race suites 5/5 repeats); live server tests 2 passed;
+  live app: launch → `firstList ms=902` (first launch after a rebuild; repeat launches were 319–487 ms) →
+  `adb kill-server` → `start-server` → `phase=ready` again, process alive.
+- Not fixed, needs a decision: `DeviceStore`'s run loop has no unit tests (it lives in the executable target;
+  covering it needs an `AdbFilesTests` target or moving the loop behind protocols).
