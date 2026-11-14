@@ -15,6 +15,8 @@ struct BrowserView: View {
 
     @Environment(AppServices.self) private var services
     @State private var store: BrowserStore?
+    @State private var preview: PreviewController?
+    @State private var presenter: QuickLookPanelPresenter?
 
     var body: some View {
         Group {
@@ -28,6 +30,8 @@ struct BrowserView: View {
                         // A finished upload into the folder on screen shows up without ⌘R.
                         if let event, event.serial == store.serial, event.folder == store.path { store.refresh() }
                     }
+                    .onChange(of: store.selection) { preview?.selectionChanged(store.selectedRows.map(\.file)) }
+                    .onChange(of: store.path) { preview?.close() }
             } else {
                 ProgressView()
             }
@@ -54,7 +58,8 @@ struct BrowserView: View {
                     promise: { row in promise(for: row, serial: store.serial) },
                     onDropFiles: { urls, folder in upload(urls, into: folder?.file.path ?? store.path, store: store) },
                     editingPath: store.editingPath,
-                    actions: tableActions(store)
+                    actions: tableActions(store),
+                    preview: presenter
                 )
                 .overlay {
                     if store.phase == .empty {
@@ -65,6 +70,19 @@ struct BrowserView: View {
             } else {
                 BrowserStateView(phase: store.phase, retry: store.refresh)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if let name = preview?.loadingName {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading preview of “\(name)”…").font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer()
+                    Button("Cancel") { preview?.close() }.controlSize(.small)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.bar)
+                .overlay(alignment: .top) { Divider() }
+                .accessibilityElement(children: .combine)
             }
             if let busy = store.busy {
                 HStack(spacing: 8) {
@@ -123,9 +141,10 @@ struct BrowserView: View {
             cancelRename: { store.cancelRename() },
             moveRows: { paths, folder, copy in store.transfer(paths, into: folder, copy: copy) },
             menuItems: { clicked, selection in
-                ContextMenu.items(clicked: clicked, selection: selection, store: store, queue: queue)
+                ContextMenu.items(clicked: clicked, selection: selection, store: store, queue: queue, preview: preview)
             },
-            dragChanged: { store.draggingPaths = $0 }
+            dragChanged: { store.draggingPaths = $0 },
+            quickLook: { preview?.toggle(store.selectedRows.map(\.file)) }
         )
     }
 
@@ -177,12 +196,22 @@ struct BrowserView: View {
             serial: serial, listing: client, cache: services.listingCache, startPath: startPath,
             operations: AdbFileOperations(serial: serial, client: client)
         )
+        let newPresenter = QuickLookPanelPresenter()
+        let newPreview = PreviewController(
+            cache: PreviewCache(serial: serial), downloader: InteractivePreviewDownloader(client: client), presenter: newPresenter,
+            onFailure: { [weak newStore] alert in newStore?.alert = alert }
+        )
+        newPresenter.onClose = { [weak newPreview] in newPreview?.panelDidClose() }
+        newPresenter.onToggle = { [weak newPreview] in newPreview?.close() }
+        presenter = newPresenter
+        preview = newPreview
         store = newStore
         newStore.start()
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(3600))
         }
         let gone = !isDeviceUsable(serial)
+        newPreview.cancel()
         newStore.cancel(reason: gone ? "device-gone" : "device-switch")
         if gone { await client.disconnect() }
     }

@@ -1,5 +1,6 @@
 import AppKit
 import os
+import Quartz
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -16,6 +17,8 @@ struct FileTableActions {
     var menuItems: (_ clicked: FileRow?, _ selection: [FileRow]) -> [NSMenuItem] = { _, _ in [] }
     /// A drag of rows started (paths) or ended (empty), so other drop targets can move them.
     var dragChanged: (_ paths: [String]) -> Void = { _ in }
+    /// Space: toggle Quick Look for the selection.
+    var quickLook: () -> Void = {}
 }
 
 /// A menu item that runs a closure.
@@ -54,6 +57,8 @@ struct FileTableView: NSViewRepresentable {
     /// The row whose name is being edited inline, if any.
     var editingPath: String?
     var actions = FileTableActions()
+    /// Controls the Quick Look panel while this table is first responder.
+    var preview: QuickLookPanelPresenter?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -82,10 +87,11 @@ struct FileTableView: NSViewRepresentable {
         table.doubleAction = #selector(Coordinator.doubleClicked(_:))
         table.action = #selector(Coordinator.clicked(_:))
         let menu = NSMenu()
-        menu.autoenablesItems = false // honour each item's isEnabled (e.g. Quick Look until milestone 6)
+        menu.autoenablesItems = false // honour each item's isEnabled
         menu.delegate = context.coordinator
         table.menu = menu
         table.onOpenSelection = { [weak coordinator = context.coordinator] in coordinator?.openSelection() }
+        table.onQuickLook = { [weak coordinator = context.coordinator] in coordinator?.parent?.actions.quickLook() }
         table.setAccessibilityLabel("Files")
         // .fileURL for Finder items; the file-promise types so our own rows (dragged as promises) can be
         // dropped onto a folder row of this table to move/copy them.
@@ -124,7 +130,7 @@ struct FileTableView: NSViewRepresentable {
         ]
 
         weak var table: NSTableView?
-        private var parent: FileTableView?
+        private(set) var parent: FileTableView?
         private var rows: [FileRow] = []
         private var version = -1
         private var folderPath: String?
@@ -145,6 +151,10 @@ struct FileTableView: NSViewRepresentable {
         func update(with parent: FileTableView) {
             self.parent = parent
             guard let table else { return }
+            if let fileTable = table as? FileNSTableView, fileTable.preview !== parent.preview {
+                fileTable.preview = parent.preview
+                parent.preview?.table = table
+            }
             isApplying = true
             defer { isApplying = false }
 
@@ -451,16 +461,44 @@ struct FileTableView: NSViewRepresentable {
     }
 }
 
-/// Table that opens the selection on Return/Enter, like Finder's ⌘↓.
+/// Table that opens the selection on Return/Enter, like Finder's ⌘↓, and toggles Quick Look on Space.
+///
+/// Only `keyDown` and the Quick Look panel controller methods are overridden here: overriding the dragging
+/// source methods broke drag & drop before (ADB-5).
 final class FileNSTableView: NSTableView {
     var onOpenSelection: (() -> Void)?
+    var onQuickLook: (() -> Void)?
+    weak var preview: QuickLookPanelPresenter?
 
     override func keyDown(with event: NSEvent) {
-        // 36 = Return, 76 = keypad Enter
+        // 36 = Return, 76 = keypad Enter, 49 = Space (without modifiers: Quick Look, like Finder)
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option])
         if event.keyCode == 36 || event.keyCode == 76 {
             onOpenSelection?()
+        } else if event.keyCode == 49, modifiers.isEmpty {
+            onQuickLook?()
         } else {
             super.keyDown(with: event)
+        }
+    }
+
+    // QLPreviewPanelController (an informal protocol; AppKit calls these on the main thread).
+
+    override nonisolated func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        MainActor.assumeIsolated { preview != nil }
+    }
+
+    override nonisolated func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            guard let panel else { return }
+            preview?.begin(panel)
+        }
+    }
+
+    override nonisolated func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            guard let panel else { return }
+            preview?.end(panel)
         }
     }
 }

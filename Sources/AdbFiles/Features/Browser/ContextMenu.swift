@@ -4,7 +4,9 @@ import AppKit
 /// background (New Folder, Copy Path of the folder).
 @MainActor
 enum ContextMenu {
-    static func items(clicked: FileRow?, selection: [FileRow], store: BrowserStore, queue: TransferQueue) -> [NSMenuItem] {
+    static func items(
+        clicked: FileRow?, selection: [FileRow], store: BrowserStore, queue: TransferQueue, preview: PreviewController?
+    ) -> [NSMenuItem] {
         let canOperate = store.canOperate && store.editingPath == nil
         guard clicked != nil, !selection.isEmpty else {
             return [
@@ -17,7 +19,9 @@ enum ContextMenu {
         let single = selection.count == 1 ? selection[0] : nil
         return [
             ClosureMenuItem("Open", enabled: single?.isNavigable == true) { if let single { store.open(single) } },
-            ClosureMenuItem("Quick Look", enabled: false) {}, // milestone 6
+            ClosureMenuItem("Quick Look", enabled: preview != nil && !PreviewController.previewable(selection.map(\.file)).isEmpty) {
+                preview?.toggle(selection.map(\.file))
+            },
             .separator(),
             ClosureMenuItem("Download To…") { TransferActions.downloadSelection(of: store, queue: queue) },
             .separator(),

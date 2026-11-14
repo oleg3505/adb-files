@@ -37,6 +37,8 @@ final class AppServices {
     @ObservationIgnored private var usableSerials: Set<String> = []
 
     init() {
+        // Quick Look copies are only for this run.
+        Task.detached(priority: .utility) { PreviewCache.clearAll() }
         let clients = SyncClientRegistry()
         self.clients = clients
         transfers = TransferQueue(engine: AdbTransferEngine { serial in await clients.client(for: serial) })
