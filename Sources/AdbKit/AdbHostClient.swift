@@ -41,6 +41,14 @@ public struct AdbHostClient: Sendable {
         return DeviceListParser.parse(String(decoding: payload, as: UTF8.self))
     }
 
+    /// Returns the features both the device and the server support (`host-serial:<serial>:features`),
+    /// e.g. `ls_v2`, `stat_v2`.
+    public func features(serial: String) async throws -> Set<String> {
+        let payload = try await oneShot("host-serial:\(serial):features")
+        let text = String(decoding: payload, as: UTF8.self)
+        return Set(text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+    }
+
     /// Streams the device list: the current list immediately, then a new list on every change
     /// (`host:track-devices-l`).
     ///
