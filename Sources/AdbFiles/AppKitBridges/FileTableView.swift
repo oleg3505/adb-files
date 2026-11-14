@@ -15,6 +15,10 @@ struct FileTableView: NSViewRepresentable {
     let onSelect: (Set<String>) -> Void
     let onOpen: (FileRow) -> Void
     let onSort: (FileSort) -> Void
+    /// A file promise for dragging a row out to Finder (download starts on drop).
+    let promise: (FileRow) -> NSFilePromiseProvider?
+    /// Finder items dropped on the table (`folder` nil) or onto a folder row.
+    let onDropFiles: (_ urls: [URL], _ folder: FileRow?) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -43,6 +47,9 @@ struct FileTableView: NSViewRepresentable {
         table.doubleAction = #selector(Coordinator.doubleClicked(_:))
         table.onOpenSelection = { [weak coordinator = context.coordinator] in coordinator?.openSelection() }
         table.setAccessibilityLabel("Files")
+        table.registerForDraggedTypes([.fileURL])
+        table.setDraggingSourceOperationMask(.copy, forLocal: false)
+        table.setDraggingSourceOperationMask([], forLocal: true)
 
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -156,6 +163,41 @@ struct FileTableView: NSViewRepresentable {
             guard !isApplying, let table else { return }
             let paths = Set(table.selectedRowIndexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil })
             parent?.onSelect(paths)
+        }
+
+        // MARK: Drag & drop
+
+        func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
+            guard rows.indices.contains(row), !rows[row].file.isSymlink else { return nil }
+            return parent?.promise(rows[row])
+        }
+
+        func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+            Logger.transfer.info("promise drag began rows=\(rowIndexes.count)")
+        }
+
+        func tableView(
+            _ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int,
+            proposedDropOperation dropOperation: NSTableView.DropOperation
+        ) -> NSDragOperation {
+            // Rows dragged within this table are not a move or copy target (that is milestone 5).
+            if info.draggingSource as? NSTableView === tableView { return [] }
+            guard info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) else { return [] }
+            if dropOperation == .on, rows.indices.contains(row), rows[row].file.isDirectory {
+                return .copy // into that folder
+            }
+            tableView.setDropRow(-1, dropOperation: .on) // the whole table = current folder
+            return .copy
+        }
+
+        func tableView(
+            _ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation
+        ) -> Bool {
+            let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+            guard !urls.isEmpty else { return false }
+            let folder = (dropOperation == .on && rows.indices.contains(row) && rows[row].file.isDirectory) ? rows[row] : nil
+            parent?.onDropFiles(urls, folder)
+            return true
         }
 
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {

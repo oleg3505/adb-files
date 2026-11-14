@@ -21,7 +21,11 @@ struct AdbFilesApp: App {
             RootView(store: deviceStore)
                 .environment(services)
                 .frame(minWidth: 700, minHeight: 420)
+                .onChange(of: deviceStore.devices, initial: true) { _, devices in services.devicesChanged(devices) }
         }
-        .commands { BrowserCommands() }
+        .commands {
+            BrowserCommands()
+            TransferCommands(services: services)
+        }
     }
 }

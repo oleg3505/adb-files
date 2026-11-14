@@ -1,18 +1,65 @@
 import AdbKit
+import Foundation
 import Observation
 
-/// App-wide services shared by all windows: one sync client per device and the listing cache.
+/// One `AdbSyncClient` per device, created on first use and reused (it keeps one listing connection).
+@MainActor
+final class SyncClientRegistry {
+    private var clients: [String: AdbSyncClient] = [:]
+
+    func client(for serial: String) -> AdbSyncClient {
+        if let existing = clients[serial] { return existing }
+        let client = AdbSyncClient(serial: serial)
+        clients[serial] = client
+        return client
+    }
+
+    func existingClient(for serial: String) -> AdbSyncClient? { clients[serial] }
+}
+
+/// App-wide services shared by all windows: sync clients, the listing cache and transfers.
 @Observable
 @MainActor
 final class AppServices {
-    let listingCache = ListingCache()
-    @ObservationIgnored private var syncClients: [String: AdbSyncClient] = [:]
+    /// A finished upload; browsers showing `folder` on `serial` refresh.
+    struct UploadEvent: Equatable {
+        let id = UUID()
+        let serial: String
+        let folder: String
+    }
 
-    /// The sync client for a device; created on first use and reused (it keeps one listing connection).
+    let listingCache = ListingCache()
+    @ObservationIgnored let transfers: TransferQueue
+    /// Last finished upload (observed by browsers).
+    private(set) var lastUpload: UploadEvent?
+
+    @ObservationIgnored private let clients: SyncClientRegistry
+    @ObservationIgnored private var usableSerials: Set<String> = []
+
+    init() {
+        let clients = SyncClientRegistry()
+        self.clients = clients
+        transfers = TransferQueue(engine: AdbTransferEngine { serial in await clients.client(for: serial) })
+        transfers.onUploadFinished = { [weak self] serial, folder in
+            guard let self else { return }
+            let path = RemotePath.normalized(folder)
+            Task { await self.listingCache.remove(serial: serial, path: path) }
+            self.lastUpload = UploadEvent(serial: serial, folder: path)
+        }
+    }
+
     func syncClient(for serial: String) -> AdbSyncClient {
-        if let existing = syncClients[serial] { return existing }
-        let client = AdbSyncClient(serial: serial)
-        syncClients[serial] = client
-        return client
+        clients.client(for: serial)
+    }
+
+    /// Called whenever the device list changes: transfers of devices that left (or became unusable) fail
+    /// with Retry, and their connections are closed.
+    func devicesChanged(_ devices: [Device]) {
+        let usable = Set(devices.filter { $0.state.isUsable }.map(\.serial))
+        for serial in usableSerials.subtracting(usable) {
+            transfers.deviceGone(serial)
+            if let client = clients.existingClient(for: serial) { Task { await client.disconnect() } }
+        }
+        usableSerials = usable
     }
 }

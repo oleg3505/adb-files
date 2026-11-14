@@ -1,4 +1,5 @@
 import AdbKit
+import AppKit
 import os
 import SwiftUI
 
@@ -23,6 +24,10 @@ struct BrowserView: View {
                     .navigationTitle(store.path == "/" ? device.displayName : (store.path as NSString).lastPathComponent)
                     .navigationSubtitle(device.displayName)
                     .toolbar { toolbar(store) }
+                    .onChange(of: services.lastUpload) { _, event in
+                        // A finished upload into the folder on screen shows up without ⌘R.
+                        if let event, event.serial == store.serial, event.folder == store.path { store.refresh() }
+                    }
             } else {
                 ProgressView()
             }
@@ -38,11 +43,19 @@ struct BrowserView: View {
             if store.phase == .loaded {
                 FileTableView(
                     folderPath: store.path, rows: store.rows, rowsVersion: store.rowsVersion, selection: store.selection, sort: store.sort,
-                    onSelect: store.setSelection, onOpen: store.open, onSort: { store.sort = $0 }
+                    onSelect: store.setSelection, onOpen: store.open, onSort: { store.sort = $0 },
+                    promise: { row in promise(for: row, serial: store.serial) },
+                    onDropFiles: { urls, folder in upload(urls, into: folder?.file.path ?? store.path, store: store) }
                 )
             } else {
                 BrowserStateView(phase: store.phase, retry: store.refresh)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .dropDestination(for: URL.self) { urls, _ in
+                        // An empty folder has no table, so it accepts Finder drops here.
+                        guard store.phase == .empty, !urls.isEmpty else { return false }
+                        upload(urls, into: store.path, store: store)
+                        return true
+                    }
             }
         }
     }
@@ -57,6 +70,9 @@ struct BrowserView: View {
                 .disabled(!store.canGoForward)
                 .help("Forward (⌘])")
         }
+        ToolbarItem(placement: .primaryAction) {
+            TransfersButton(queue: services.transfers)
+        }
         ToolbarItemGroup(placement: .primaryAction) {
             Button { store.goUp() } label: { Label("Enclosing Folder", systemImage: "arrow.up") }
                 .disabled(!store.canGoUp)
@@ -68,6 +84,19 @@ struct BrowserView: View {
             }
             .help("Show Hidden Files (⌘⇧.)")
         }
+    }
+
+    private func promise(for row: FileRow, serial: String) -> NSFilePromiseProvider? {
+        let queue = services.transfers
+        let delegate = FilePromiseDelegate(file: row.file, serial: serial) { request, completion in
+            Task { @MainActor in queue.enqueue(request) { completion($0) } }
+        }
+        return delegate.makeProvider()
+    }
+
+    private func upload(_ urls: [URL], into remoteFolder: String, store: BrowserStore) {
+        services.transfers.enqueue(TransferActions.uploadRequests(urls, serial: store.serial, to: remoteFolder))
+        Logger.transfer.info("drop upload items=\(urls.count) folder=\(remoteFolder, privacy: .public)")
     }
 
     /// Owns the store for one device; runs until SwiftUI cancels the task.

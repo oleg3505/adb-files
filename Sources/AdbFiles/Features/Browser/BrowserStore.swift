@@ -94,6 +94,11 @@ final class BrowserStore {
         navigate(to: row.file.path, action: "open")
     }
 
+    /// The selected rows, in table order.
+    var selectedRows: [FileRow] {
+        rows.filter { selection.contains($0.id) }
+    }
+
     /// Opens the single selected row (⌘↓ / Return).
     func openSelection() {
         guard selection.count == 1, let selected = selection.first, let row = rows.first(where: { $0.id == selected }) else { return }

@@ -27,6 +27,8 @@ final class TransferQueue {
     @ObservationIgnored private var reservations: Set<String> = []
     /// (time, bytesDone) samples per item for the speed window.
     @ObservationIgnored private var samples: [UUID: [(Duration, UInt64)]] = [:]
+    /// One-shot callbacks run when an item reaches a final state (file promises wait on these).
+    @ObservationIgnored private var completions: [UUID: (TransferItem.State) -> Void] = [:]
 
     /// - Parameters:
     ///   - now: Monotonic time; injectable so throttle/speed tests use a manual clock.
@@ -43,10 +45,19 @@ final class TransferQueue {
 
     // MARK: - Public API
 
-    func enqueue(_ requests: [TransferRequest]) {
-        for request in requests {
-            items.append(TransferItem(request: request))
-        }
+    @discardableResult
+    func enqueue(_ requests: [TransferRequest]) -> [UUID] {
+        let new = requests.map { TransferItem(request: $0) }
+        items.append(contentsOf: new)
+        pump()
+        return new.map(\.id)
+    }
+
+    /// Enqueues one request and calls `completion` once it ends (done, failed or cancelled).
+    func enqueue(_ request: TransferRequest, completion: @escaping (TransferItem.State) -> Void) {
+        let item = TransferItem(request: request)
+        completions[item.id] = completion
+        items.append(item)
         pump()
     }
 
@@ -249,6 +260,7 @@ final class TransferQueue {
     /// Releases the item's slot and name reservation and starts what can run next.
     private func finish(_ index: Int) {
         let item = items[index]
+        completions.removeValue(forKey: item.id)?(item.state)
         tasks.removeValue(forKey: item.id)?.cancel()
         samples[item.id] = nil
         if let name = item.resolvedName { reservations.remove(reservationKey(item.request, name)) }
