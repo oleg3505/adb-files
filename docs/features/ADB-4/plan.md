@@ -1,7 +1,7 @@
 # ADB-4 — implementation plan
 
 <!-- A human writes this line to approve. Until it is here, guard-plan-approval blocks writes to code. -->
-Approved-by: olehkondratiuk · 2026-11-14 (v2, after analyze BLOCK #1)
+Approved-by: olehkondratiuk · 2026-11-14 (v3, after analyze BLOCK #2 — human decision: apply fix, final gate check)
 
 Pattern followed: protocol code as in ADB-3 (`SyncProtocol.swift` incremental decoder + byte fixtures,
 `AdbSyncClient` actor, `FakeDevice` in `Tests/AdbKitTests/AdbSyncClientTests.swift`); app state as
@@ -35,7 +35,8 @@ bridging as `AppKitBridges/FileTableView.swift`. No new pattern → no ADR.
   on adbd deleting the partial (verified) and is asserted by `LST2` live; `walk` runs on a transfer
   connection (never the listing one, so browsing is not blocked); folder transfers skip a file that
   already exists at the target with the same size and mtime (folder Retry); an unreadable file inside
-  a folder is recorded as a per-file failure and the walk continues; `disconnect()` closes the listing
+  a folder (remote file on download, local file on upload) is recorded as a per-file failure and the
+  walk continues; `disconnect()` closes the listing
   **and** transfer connections; `os_signpost` interval "transfer"
 - test: `Tests/AdbKitTests/AdbSyncTransferTests.swift` on `FakeDevice` extended with RECV/SEND, a
   **chunk gate** (pause after N chunks until released) and a **peak open transfer connections**
@@ -44,7 +45,7 @@ bridging as `AppKitBridges/FileTableView.swift`. No new pattern → no ADR.
   (limit 300 ms; steady chunk every 100 ms for 1.5 s must succeed; stall 700 ms must fail — fails if
   the limit were applied once overall); 3 downloads held at the gate → peak connections == 2; folder
   walk both ways (nested, empty folder, symlink skipped, unreadable file → per-file failure + rest
-  copied); folder retry skips completed files; stale `.adbfiles-part` removed; target-exists move fails
+  copied, in both directions — an unreadable local file via a 0o000 temp file); folder retry skips completed files; stale `.adbfiles-part` removed; target-exists move fails
   instead of overwriting. `LiveDeviceTests`: download
   `/system/fonts/NotoSerifCJK-Regular.ttc`, SHA-1 vs device; write tests gated by `ADB_TEST_WRITE=1`:
   upload/download round trip in `/sdcard/Download/AdbFilesTest/`, cancel leaves nothing, folder removed at the end
@@ -59,16 +60,20 @@ bridging as `AppKitBridges/FileTableView.swift`. No new pattern → no ADR.
   **Final state is decided by a stop reason recorded on the item before its task is cancelled**
   (user → `cancelled`, `deviceGone(serial)` → `failed(retryable)`); a thrown `CancellationError` never
   decides the state by itself. Every progress/completion write carries an attempt token and is dropped
-  once the item is final or retried. Remote conflict names: `LST2` check **plus** a per-(serial, parent)
-  reservation of target names held until the item finishes; local names: no-overwrite move with next
-  suffix on collision. The resolved root target is stored on the item at the first attempt and reused by
+  once the item is final or retried. Conflict names are resolved and **reserved before an item starts, on both
+  sides**: remote — `LST2` check plus a per-(serial, parent) reservation; local — file-exists check plus a
+  per-(Mac folder) reservation. Reservations are held until the item finishes. The temp name is derived
+  from the reserved name (`a 2.txt.adbfiles-part`), so two same-named items never share a temp file; a
+  stale `.adbfiles-part` is deleted only when no live reservation owns that name. The no-overwrite move
+  stays as a backstop against files created outside the app. The resolved root target is stored on the item at the first attempt and reused by
   Retry. After an upload completes, the browser folder refreshes (cache invalidated)
 - test: `Tests/AdbFilesTests/TransferQueueTests.swift` with a scripted fake engine and a manual clock —
   concurrency cap and order; throttle (1,000 callbacks over 1.0 s of manual time → exactly 10 publishes
   + final); speed/ETA with the manual clock; cancel while queued/running; **cancel racing completion**;
   **deviceGone while queued and while running → failed + retryable, not cancelled**; **progress after
   cancel/done → no change**; retry reuses the stored target; **two same-named uploads at once → `a.txt` and
-  `a 2.txt`**; conflict names (`a.txt` → `a 2.txt`, `a 2.txt` → `a 3.txt`, no extension, dot-files, folders)
+  `a 2.txt`**; **two same-named downloads held at the chunk gate → `a.txt` and `a 2.txt`, both
+  byte-identical, neither temp file touched by the other**; conflict names (`a.txt` → `a 2.txt`, `a 2.txt` → `a 3.txt`, no extension, dot-files, folders)
 - executed how: tests; live in R4
 
 ### R4 — UI: transfers popover, menu commands, drag & drop (L)
