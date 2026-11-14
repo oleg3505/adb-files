@@ -6,7 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT="build/AppIcon.icns"
 
-if [[ -f "$OUT" && "$OUT" -nt "$0" ]]; then
+# Compare against the repo-relative path: "$0" may be relative to the caller's cwd, which we just left.
+if [[ -f "$OUT" && "$OUT" -nt scripts/make-icon.sh ]]; then
     exit 0
 fi
 
