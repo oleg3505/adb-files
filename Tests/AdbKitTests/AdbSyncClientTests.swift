@@ -43,6 +43,8 @@ struct FakeDevice: Sendable {
     var failSendPaths: Set<String> = []
     /// Files written by SEND: path → (bytes, mtime, mode).
     let received = OSAllocatedUnfairLock(initialState: [String: (data: Data, mtime: UInt32, mode: UInt32)]())
+    /// When set, listings, stats and shell commands are answered from this file system.
+    var fs: FakeFileSystem?
     /// Currently open and peak number of sync connections.
     let syncConnections = OSAllocatedUnfairLock(initialState: (open: 0, peak: 0))
 
@@ -60,7 +62,7 @@ struct FakeDevice: Sendable {
         try await client.write("OKAY")
         if service.hasPrefix("shell:") {
             log.withLock { $0.append(service) }
-            try await client.write(shellReply)
+            try await client.write(fs.map { $0.handleShell(String(service.dropFirst("shell:".count))) } ?? shellReply)
             client.close()
             return
         }
@@ -122,7 +124,12 @@ struct FakeDevice: Sendable {
                 let v2 = id == "LIS2"
                 var reply = Data()
                 let directory = RemotePath.normalized(path)
-                for name in listings[directory] ?? [] {
+                if let fs {
+                    for (name, node) in fs.children(of: directory) {
+                        reply += v2 ? Self.dnt2(name, mode: node.isDirectory ? 0o40770 : 0o100660, size: UInt64(node.data.count)) : Self.dent(name)
+                    }
+                }
+                for name in fs == nil ? (listings[directory] ?? []) : [] {
                     let full = RemotePath.join(directory, name)
                     let mode: UInt32 = directories.contains(full) ? 0o40770 : (symlinks.contains(full) ? 0o120777 : 0o100660)
                     let size = UInt64(files[full]?.count ?? 42)
@@ -137,7 +144,14 @@ struct FakeDevice: Sendable {
                 }
             case "LST2":
                 var reply = Data("LST2".utf8)
-                if let info = statInfo[path] {
+                if let fs {
+                    if let node = fs.node(at: path) {
+                        reply += Self.le(UInt32(0)) + Data(count: 16) + Self.le(UInt32(node.isDirectory ? 0o40770 : 0o100660)) + Data(count: 12)
+                        reply += Self.le(UInt64(node.data.count)) + Data(count: 8) + Self.le(node.mtime) + Data(count: 8)
+                    } else {
+                        reply += Self.le(UInt32(2)) + Data(count: 64)
+                    }
+                } else if let info = statInfo[path] {
                     reply += Self.le(UInt32(0)) + Data(count: 16) + Self.le(UInt32(0o100660)) + Data(count: 12)
                     reply += Self.le(info.size) + Data(count: 8) + Self.le(info.mtime) + Data(count: 8)
                 } else {

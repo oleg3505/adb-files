@@ -25,6 +25,34 @@ public enum AdbShell {
         "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    /// Marker lines appended by `runChecked`; only the **last** output line is trusted.
+    static let okMarker = "__ADBFILES_OK"
+    static let failMarker = "__ADBFILES_FAIL"
+
+    /// Runs `command` with stderr captured and an echoed result marker (the `shell:` service has no exit status).
+    /// - Throws: `AdbError.operationFailed` with the command's own output when it fails.
+    public static func runChecked(
+        _ command: String, serial: String, client: AdbHostClient = AdbHostClient(), timeout: Duration = .seconds(10)
+    ) async throws {
+        let output = try await run("\(command) 2>&1 && echo \(okMarker) || echo \(failMarker)", serial: serial, client: client, timeout: timeout)
+        if case .failure(let error) = parseChecked(output) { throw error }
+    }
+
+    /// Interprets `runChecked` output: success only when the last line is exactly the OK marker.
+    static func parseChecked(_ output: String) -> Result<Void, AdbError> {
+        var lines = output.split(whereSeparator: \.isNewline).map(String.init)
+        guard let last = lines.popLast()?.trimmingCharacters(in: .whitespaces) else {
+            return .failure(.protocolError("no output from the device"))
+        }
+        switch last {
+        case okMarker: return .success(())
+        case failMarker:
+            let message = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            return .failure(.operationFailed(message.isEmpty ? "The device reported an error." : message))
+        default: return .failure(.protocolError("unexpected shell output \(last.debugDescription)"))
+        }
+    }
+
     /// Builds `program 'arg1' 'arg2' …`. `program` must be a trusted literal such as `mkdir -p`.
     public static func command(_ program: String, _ arguments: [String]) -> String {
         ([program] + arguments.map(quote)).joined(separator: " ")

@@ -32,6 +32,10 @@ public enum AdbError: Error, Sendable, Equatable, LocalizedError {
     case localFileExists(String)
     /// Reading or writing a file on the Mac failed.
     case localIOError(String)
+    /// An item with this name already exists at the destination (never overwritten).
+    case alreadyExists(String)
+    /// The device refused or did not complete an operation; carries its message.
+    case operationFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -50,6 +54,8 @@ public enum AdbError: Error, Sendable, Equatable, LocalizedError {
         case .remoteError(let path, let errno): "The device could not open “\(path)” (error \(errno))."
         case .localFileExists(let path): "“\(path)” already exists on this Mac."
         case .localIOError(let detail): "Could not access the file on this Mac: \(detail)"
+        case .alreadyExists(let path): "An item named “\((path as NSString).lastPathComponent)” already exists there."
+        case .operationFailed(let message): message
         }
     }
 }
