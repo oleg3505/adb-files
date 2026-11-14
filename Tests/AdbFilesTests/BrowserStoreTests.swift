@@ -4,7 +4,24 @@ import os
 import Testing
 @testable import AdbFiles
 
-// MARK: - Fake
+// MARK: - Fakes
+
+/// A one-shot latch: `wait()` suspends until `open()`.
+actor Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+}
 
 /// Scripted listings. A gated path suspends `list` until the test calls `release(_:)`.
 final class FakeListing: DirectoryListing {
@@ -14,6 +31,7 @@ final class FakeListing: DirectoryListing {
         var gated: Set<String> = []
         var waiting: [String: [CheckedContinuation<Void, Never>]] = [:]
         var disconnects = 0
+        var cancelOnList: Set<String> = []
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -23,6 +41,10 @@ final class FakeListing: DirectoryListing {
     }
 
     func gate(_ path: String) { state.withLock { _ = $0.gated.insert(path) } }
+
+    /// The next `list(path)` throws `CancellationError` although the caller was not cancelled
+    /// (what a connection closed by another window looks like).
+    func cancelNextList(_ path: String) { state.withLock { _ = $0.cancelOnList.insert(path) } }
 
     func release(_ path: String) {
         let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
@@ -45,6 +67,7 @@ final class FakeListing: DirectoryListing {
                 state.withLock { $0.waiting[directory, default: []].append(continuation) }
             }
         }
+        if state.withLock({ $0.cancelOnList.remove(directory) != nil }) { throw CancellationError() }
         let result: Result<[RemoteFile], AdbError> = state.withLock { state in
             guard var queue = state.results[directory], !queue.isEmpty else { return .success([]) }
             let next = queue.count > 1 ? queue.removeFirst() : queue[0]
@@ -233,6 +256,70 @@ struct BrowserStoreTests {
         store.open(row)
         try await waitUntil { listing.calls.contains("/sdcard") }
         #expect(store.path == "/sdcard")
+    }
+
+    @Test func cancellationErrorFromListingIsAFailureNotASilentSpinner() async throws {
+        let listing = FakeListing()
+        listing.cancelNextList("/sdcard")
+        let store = makeStore(listing)
+        store.start()
+        try await waitUntil { store.phase != .loading }
+        #expect(store.phase == .failed(AdbError.connectionClosed.localizedDescription))
+    }
+
+    /// Rows for the race tests: 3 files whose name, date and size orders all differ.
+    private static let raceFiles = [file("b", size: 3, mtime: 1), file("a", size: 1, mtime: 3), file("c", size: 2, mtime: 2)]
+    private static let raceFilesChanged = raceFiles + [file("d", size: 0, mtime: 4)]
+
+    @Test func headerClickDuringSlowRowBuildIsNotLost() async throws {
+        // Scenario: a changed refresh is building rows (slow) when the user clicks the Date header.
+        let gate = Gate()
+        let pipeline = RowPipeline(build: { files in
+            if files.count == 4 { await gate.wait() } // only the refreshed listing is slow
+            return FileSorting.buildRows(from: files)
+        })
+        let listing = FakeListing()
+        listing.script("/sdcard", .success(Self.raceFiles), .success(Self.raceFilesChanged))
+        let store = BrowserStore(serial: "A", listing: listing, cache: ListingCache(), pipeline: pipeline)
+        store.start()
+        try await waitUntil { store.rows.count == 3 }
+        store.refresh()
+        try await waitUntil { listing.calls.count == 2 }
+        try await Task.sleep(for: .milliseconds(20)) // refresh result is now stuck in build
+        store.sort = FileSort(key: .date, ascending: false)
+        try await waitUntil { store.rows.map(\.name) == ["a", "c", "b"] } // old rows, by date
+        await gate.open()
+        try await waitUntil { store.rows.count == 4 }
+        try await waitUntil { store.rows.map(\.name) == ["d", "a", "c", "b"] }
+    }
+
+    @Test func staleReArrangeDoesNotOverwriteFresherRows() async throws {
+        // Scenario: a re-arrange of the old rows is still running when a changed refresh publishes.
+        let gate = Gate()
+        let sizeArranges = OSAllocatedUnfairLock(initialState: 0)
+        let pipeline = RowPipeline(arrange: { rows, sort, hidden in
+            // Only the first size-arrange (the header click's re-arrange of the old rows) is slow.
+            let isFirst = sort.key == .size && sizeArranges.withLock { count in
+                count += 1
+                return count == 1
+            }
+            if isFirst { await gate.wait() }
+            return FileSorting.arrange(rows, sort: sort, showHidden: hidden)
+        })
+        let listing = FakeListing()
+        listing.script("/sdcard", .success(Self.raceFiles), .success(Self.raceFilesChanged))
+        let store = BrowserStore(serial: "A", listing: listing, cache: ListingCache(), pipeline: pipeline)
+        store.start()
+        try await waitUntil { store.rows.count == 3 }
+        listing.gate("/sdcard")
+        store.refresh()                   // load in flight: cached rows shown, device listing held
+        try await waitUntil { listing.calls.count == 2 }
+        store.sort = FileSort(key: .size) // same load generation: re-arrange of the 3 old rows, now stuck
+        listing.release("/sdcard")        // the refresh arranges the 4 new rows by size and publishes
+        try await waitUntil { store.rows.map(\.name) == ["d", "a", "c", "b"] }
+        await gate.open()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(store.rows.map(\.name) == ["d", "a", "c", "b"], "the stale 3-row arrange must be dropped")
     }
 
     @Test func openingAFileDoesNotNavigate() async throws {

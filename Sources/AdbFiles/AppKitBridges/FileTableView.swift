@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 
 /// Finder-like file list backed by `NSTableView` (view-based, so only visible rows are built).
 struct FileTableView: NSViewRepresentable {
+    /// The folder being shown; when it changes the table scrolls back to the top, like Finder.
+    let folderPath: String
     let rows: [FileRow]
     /// Changes only when `rows` changes; the table reloads only then.
     let rowsVersion: Int
@@ -76,6 +78,7 @@ struct FileTableView: NSViewRepresentable {
         private var parent: FileTableView?
         private var rows: [FileRow] = []
         private var version = -1
+        private var folderPath: String?
         private var isApplying = false
         private let icons = IconCache()
 
@@ -91,6 +94,10 @@ struct FileTableView: NSViewRepresentable {
                 rows = parent.rows
                 version = parent.rowsVersion
                 table.reloadData()
+                if parent.folderPath != folderPath {
+                    folderPath = parent.folderPath
+                    if !rows.isEmpty { table.scrollRowToVisible(0) }
+                }
                 applySelection(parent.selection, to: table)
                 let elapsed = clock.now - started
                 Logger.ui.info(

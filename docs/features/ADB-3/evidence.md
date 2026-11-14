@@ -46,3 +46,21 @@ Device: Pixel 4 (Android 13) over USB. No files were created on the phone (user'
 - `refresh()` cleared the selection (AC5) → only a path change clears it.
 - Resort took ~300 ms → see sort latency above.
 - Close of the browser was not logged when no listing was in flight → `browser cancel reason=… inFlight=…`.
+
+### Self-review
+- `code-reviewer` on `main..HEAD`: 1 blocking, 2 should-fix, 4 nits — all fixed:
+  - Blocking: a slow row build and a header click could publish out of order (table in name order under a
+    Date header; or stale rows reappearing). Fix: `arrangeEpoch` drops stale arranges; `show()` re-arranges
+    if the sort/hidden setting changed meanwhile. New `RowPipeline` seam; deterministic tests
+    `headerClickDuringSlowRowBuildIsNotLost` and `staleReArrangeDoesNotOverwriteFresherRows`. Mutation
+    checks: removing the re-arrange fails the first, removing the epoch check fails the second; both restored.
+    (A first, timing-based test passed even without the fix, so it was replaced.)
+  - `disconnect()` surfaced as a silent `CancellationError` → `AdbSyncClient` reports `connectionClosed`
+    when the caller was not cancelled, and the store treats a current-load `CancellationError` as a failure.
+    Tests: `disconnectEndsListingPromptly` now expects `.connectionClosed`;
+    `cancellationErrorFromListingIsAFailureNotASilentSpinner`.
+  - EACCES from `LST2` → `.permissionDenied` (test `untraversableParentIsPermissionDenied`).
+  - Nits: history stacks are observed (toolbar/menu enablement), table scrolls to top on folder change,
+    `disconnect()` doc corrected, date sort key clamped.
+- After fixes: clean build 0 warnings; `swift test` → 123 passed, 5/5 repeats; live suites 12 passed;
+  app smoke: Camera `entries=7948`, `apply rows=7948 mainMs=3`.

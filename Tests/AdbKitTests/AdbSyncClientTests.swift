@@ -193,8 +193,16 @@ struct AdbSyncClientTests {
         let clock = ContinuousClock()
         let started = clock.now
         await client.disconnect()
-        await #expect(throws: (any Error).self) { try await listing.value }
+        // The caller was not cancelled, so it must see a real error, not a silent CancellationError.
+        await #expect(throws: AdbError.connectionClosed) { try await listing.value }
         #expect(clock.now - started < .seconds(1))
+    }
+
+    @Test func untraversableParentIsPermissionDenied() async throws {
+        let device = FakeDevice(statErrors: ["/data/data/x/": 13])
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        await #expect(throws: AdbError.permissionDenied("/data/data/x")) { try await client.list("/data/data/x") }
     }
 
     @Test func cancellingCallerEndsListingPromptly() async throws {

@@ -47,7 +47,9 @@ public actor AdbSyncClient {
         }
     }
 
-    /// Closes the listing connection, ending any operation in flight (e.g. the device was unplugged).
+    /// Closes the listing connection (e.g. the device was unplugged). An operation reading from it ends
+    /// with `AdbError.connectionClosed`; one still opening a connection or running the access-check shell
+    /// finishes within `listTimeout`.
     public func disconnect() async {
         await connection?.close()
         connection = nil
@@ -83,7 +85,7 @@ public actor AdbSyncClient {
             if entries.isEmpty { try await classifyEmptyListing(directory, on: connection) }
         } catch {
             await dropConnection()
-            throw error
+            throw Self.surface(error)
         }
 
         let elapsed = clock.now - started
@@ -98,8 +100,15 @@ public actor AdbSyncClient {
             return try await stat(path, on: try await syncConnection())
         } catch {
             await dropConnection()
-            throw error
+            throw Self.surface(error)
         }
+    }
+
+    /// A closed socket surfaces as `CancellationError` (ECANCELED). If this operation itself was not
+    /// cancelled, the connection was closed under it (`disconnect()`), so report that instead.
+    private static func surface(_ error: Error) -> Error {
+        if error is CancellationError, !Task.isCancelled { return AdbError.connectionClosed }
+        return error
     }
 
     /// adbd answers a missing or unreadable directory with an empty listing, so tell them apart.
@@ -107,7 +116,9 @@ public actor AdbSyncClient {
         let info = try await stat(RemotePath.listingPath(directory), on: connection)
         switch info.errorCode {
         case 0: break
+        // errno values are only reported by STA2/LST2; v1 STAT maps a failed stat to 2 (all zeros).
         case 2: throw AdbError.notFound(directory)
+        case 13: throw AdbError.permissionDenied(directory) // EACCES: a parent can't be traversed
         case 20: throw AdbError.notADirectory(directory) // ENOTDIR
         default: throw AdbError.remoteError(path: directory, errno: info.errorCode)
         }

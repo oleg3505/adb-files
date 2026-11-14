@@ -30,6 +30,15 @@ struct FileRow: Sendable, Hashable, Identifiable {
     var isNavigable: Bool { file.isDirectory || file.isSymlink }
 }
 
+/// The two off-main stages that turn a listing into table rows. Injectable so tests can pause a stage
+/// and reproduce races deterministically.
+struct RowPipeline: Sendable {
+    var build: @Sendable ([RemoteFile]) async -> [FileRow] = { FileSorting.buildRows(from: $0) }
+    var arrange: @Sendable ([FileRow], FileSort, Bool) async -> [FileRow] = {
+        FileSorting.arrange($0, sort: $1, showHidden: $2)
+    }
+}
+
 enum FileSorting {
     /// Builds sorted, filtered rows in one go.
     static func rows(from files: [RemoteFile], sort: FileSort, showHidden: Bool) -> [FileRow] {
@@ -66,7 +75,9 @@ enum FileSorting {
             switch sort.key {
             case .name: Int64(row.nameRank)
             case .kind: Int64(row.kindRank)
-            case .date: Int64((row.file.modificationDate ?? .distantPast).timeIntervalSince1970 * 1000)
+            case .date:
+                // Clamp first: a corrupt mtime must not trap the Int64 conversion.
+                Int64(min(max((row.file.modificationDate ?? .distantPast).timeIntervalSince1970, -9e15), 9e15))
             // Folder sizes are meaningless (block size), so folders tie and fall back to name.
             case .size: row.file.isDirectory ? 0 : Int64(clamping: row.file.size)
             }

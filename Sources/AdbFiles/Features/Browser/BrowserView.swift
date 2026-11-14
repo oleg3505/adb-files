@@ -37,7 +37,7 @@ struct BrowserView: View {
             Divider()
             if store.phase == .loaded {
                 FileTableView(
-                    rows: store.rows, rowsVersion: store.rowsVersion, selection: store.selection, sort: store.sort,
+                    folderPath: store.path, rows: store.rows, rowsVersion: store.rowsVersion, selection: store.selection, sort: store.sort,
                     onSelect: store.setSelection, onOpen: store.open, onSort: { store.sort = $0 }
                 )
             } else {

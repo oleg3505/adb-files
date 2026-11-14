@@ -53,19 +53,28 @@ final class BrowserStore {
 
     @ObservationIgnored private let listing: any DirectoryListing
     @ObservationIgnored private let cache: ListingCache
+    @ObservationIgnored private let pipeline: RowPipeline
     @ObservationIgnored private var files: [RemoteFile] = []
     /// Display rows for `files`, built once per listing; sorting and filtering reuse them.
     @ObservationIgnored private var builtRows: [FileRow] = []
-    @ObservationIgnored private var backStack: [String] = []
-    @ObservationIgnored private var forwardStack: [String] = []
+    // Observed (not ignored): toolbar and Go-menu enablement depend on them.
+    private var backStack: [String] = []
+    private var forwardStack: [String] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
+    /// Bumped on every rows publish and every re-arrange request; an arrange whose epoch is stale is dropped,
+    /// so a slow refresh and a quick header click can't overwrite each other out of order.
+    @ObservationIgnored private var arrangeEpoch = 0
     @ObservationIgnored private var started = false
 
-    init(serial: String, listing: any DirectoryListing, cache: ListingCache, startPath: String = BrowserStore.startPath) {
+    init(
+        serial: String, listing: any DirectoryListing, cache: ListingCache, startPath: String = BrowserStore.startPath,
+        pipeline: RowPipeline = RowPipeline()
+    ) {
         self.serial = serial
         self.listing = listing
         self.cache = cache
+        self.pipeline = pipeline
         self.path = RemotePath.normalized(startPath)
     }
 
@@ -189,8 +198,10 @@ final class BrowserStore {
                 )
             }
         } catch {
-            guard isCurrent(token), !(error is CancellationError) else { return }
-            handle(error, hadCache: cached != nil, path: target)
+            guard isCurrent(token) else { return }
+            // This load was not cancelled, so a CancellationError means the connection was closed under it
+            // (e.g. another window disconnected the shared client). Treat it as a failure, never as silence.
+            handle(error is CancellationError ? AdbError.connectionClosed : error, hadCache: cached != nil, path: target)
         }
         if isCurrent(token) { loadTask = nil }
     }
@@ -221,21 +232,26 @@ final class BrowserStore {
     private func show(_ listing: [RemoteFile], token: Int, keepSelection: Bool) async {
         let sort = self.sort
         let showHidden = self.showHidden
+        let pipeline = self.pipeline
         let (all, arranged) = await Task.detached(priority: .userInitiated) {
-            let all = FileSorting.buildRows(from: listing)
-            return (all, FileSorting.arrange(all, sort: sort, showHidden: showHidden))
+            let all = await pipeline.build(listing)
+            return (all, await pipeline.arrange(all, sort, showHidden))
         }.value
         guard isCurrent(token) else { return }
         files = listing
         builtRows = all
+        arrangeEpoch += 1 // drops any re-arrange still working on the previous builtRows
         rows = arranged
-        let built = arranged
         rowsVersion += 1
         if keepSelection {
-            let present = Set(built.map(\.id))
+            let present = Set(arranged.map(\.id))
             selection = selection.intersection(present)
         }
         phase = listing.isEmpty ? .empty : .loaded
+        if sort != self.sort || showHidden != self.showHidden {
+            // The user changed the order while these rows were being built: arrange them again.
+            rebuildRows()
+        }
     }
 
     private func rebuildRows() {
@@ -243,12 +259,15 @@ final class BrowserStore {
         let sort = self.sort
         let showHidden = self.showHidden
         let token = generation
+        arrangeEpoch += 1
+        let epoch = arrangeEpoch
         let began = ContinuousClock.now
+        let pipeline = self.pipeline
         Task { [weak self] in
             let built = await Task.detached(priority: .userInitiated) {
-                FileSorting.arrange(all, sort: sort, showHidden: showHidden)
+                await pipeline.arrange(all, sort, showHidden)
             }.value
-            guard let self, token == self.generation else { return }
+            guard let self, token == self.generation, epoch == self.arrangeEpoch else { return }
             self.rows = built
             self.rowsVersion += 1
             self.selection = self.selection.intersection(Set(built.map(\.id)))
