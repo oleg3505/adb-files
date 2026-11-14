@@ -1,7 +1,7 @@
 # ADB-3 — implementation plan
 
 <!-- A human writes this line to approve. Until it is here, guard-plan-approval blocks writes to code. -->
-Approved-by: olehkondratiuk · 2026-11-14
+Approved-by: olehkondratiuk · 2026-11-14 (v2, after analyze BLOCK #1)
 
 Pattern followed: AdbKit protocol code as in ADB-2 (`HostProtocol.swift` incremental decoder + fixtures,
 `AdbConnection` actor, fake-server tests in `Tests/AdbKitTests/FakeAdbServer.swift`); app state as in
@@ -44,12 +44,17 @@ the user's answer, so no ADR.
 - files: `Sources/AdbKit/AdbConnection.swift` (change: `sendRaw`, `readExactly`, `openTransport(serial:service:)`),
   `Sources/AdbKit/AdbSyncClient.swift` (new: one persistent listing connection per device, lazily opened,
   dropped on error and reopened on next call; `list(_:)` picks LIS2/LIST from features; `lstat(_:)`;
-  empty-result disambiguation → `AdbError.notFound` / `.permissionDenied`; 10 s timeout; cancellation
-  closes the connection; `os_signpost` interval "list"), `Sources/AdbKit/AdbError.swift` (change: new cases)
+  empty-result disambiguation: `LST2` error≠0 → `AdbError.notFound` (2) / `.remoteError(errno)`; else one
+  `shell:` call built only via `AdbShell`: `test -r P -a -x P && echo ok || echo denied` → `denied` =
+  `.permissionDenied`, `ok` = empty list (marker parsed, since `shell:` v1 returns no exit code); 10 s
+  timeout; cancellation closes the connection; `disconnect()` closes it explicitly (device gone);
+  `os_signpost` interval "list"), `Sources/AdbKit/AdbError.swift` (change: new cases)
 - test: `Tests/AdbKitTests/AdbSyncClientTests.swift` on `FakeAdbServer` — transport+sync handshake, LIS2
-  stream of 3 entries, chunked delivery, FAIL, empty→LST2 error 2→notFound, empty→denied via shell reply,
-  reconnect after server closes, timeout. `Tests/AdbKitTests/LiveDeviceTests.swift` — `/sdcard/` and
-  `/data/` against a real device, skipped unless `ADB_TEST_SERIAL` is set
+  stream of 3 entries, chunked delivery, FAIL, empty→LST2 error 2→notFound, empty→shell request is exactly
+  `shell:test -r '/x' -a -x '/x' && echo ok || echo denied` and reply `denied\n`→permissionDenied / `ok\n`→empty,
+  reconnect after server closes, timeout, `disconnect()` during a listing ends it promptly. `Tests/AdbKitTests/LiveDeviceTests.swift` — `/sdcard/` and
+  `/data/` against a real device, skipped unless `ADB_TEST_SERIAL` is set; expects `/sdcard/` non-empty, `/data/` →
+  `.permissionDenied`, `/sdcard/Android/media/com.google.android.gms/` → empty list (no error), a missing path → `.notFound`
 - executed how: `ADB_TEST_SERIAL=9A251FFAZ0073G swift test --filter LiveDevice` → pass, with timing of
   `/sdcard/DCIM/Camera/` logged
 
@@ -58,11 +63,16 @@ the user's answer, so no ADR.
   back/forward stacks, phase `.loading/.loaded/.empty/.denied/.notFound/.failed`, sort descriptor,
   showHidden, displayed rows computed off the main thread; cancels the in-flight listing on navigation),
   `Features/Browser/FileSorting.swift` (new: folders first, `localizedStandardCompare`, size/date/kind),
+  `Features/Browser/DirectoryListing.swift` (new: `protocol DirectoryListing` — the seam `BrowserStore`
+  depends on; `AdbSyncClient` conforms, tests use a scripted fake),
   `Services/ListingCache.swift` (new: actor keyed by serial+path; SWR; returns `changed: Bool` by name+size+mtime diff)
 - test: `Tests/AdbFilesTests/BrowserStoreTests.swift`, `FileSortingTests.swift`, `ListingCacheTests.swift` —
   history semantics (Back after navigate, Forward cleared on new navigate, Up), cached listing shown before
   the fetch completes, unchanged refresh doesn't bump the rows version, hidden filter, sort orders, stale
-  result after navigating away is discarded
+  result after navigating away is discarded, `notFound`/`permissionDenied`/empty → phases (AC7 not-found is
+  asserted here), device switch → `/sdcard/` with per-device cache keys, changed refresh keeps selection by
+  name (AC5), `cancel()` mid-listing (device gone) → no state write afterwards, symlink → kind "Alias" and
+  open lists `path/`, entry with `error≠0` → size/date "—"
 - executed how: tests; live run in R5
 
 ### R5 — UI: table, breadcrumbs, toolbar, commands, states (L)
@@ -72,18 +82,21 @@ the user's answer, so no ADR.
   `Features/Browser/BreadcrumbBar.swift` (new), `Features/Browser/BrowserStateView.swift` (new: empty /
   denied / not found / failed + Retry), `App/BrowserCommands.swift` (new: `FocusedValue` + menu items
   with shortcuts), `Features/Browser/BrowserPlaceholderView.swift` (change → hosts `BrowserView` for a
-  usable device), `App/AdbFilesApp.swift` (change: `.commands`)
+  usable device; `BrowserView` runs the store in `.task(id: serial)`, so the device leaving the list or
+  becoming unusable cancels the listing, calls `BrowserStore.cancel()` and `AdbSyncClient.disconnect()`),
+  `App/AdbFilesApp.swift` (change: `.commands`)
 - logging for evidence (`ui`): `navigate path=… source=cache|device entries=N ms=…`, `refresh changed=…`,
-  `sort key=… asc=…`, `hidden=…`, `open path=…`, `selection count=N`, `phase=…`
+  `sort key=… asc=…`, `hidden=…`, `open path=…`, `selection count=N`, `phase=…`,
+  `apply rows=N mainMs=…` (main-actor time to apply rows, AC6), `listing cancelled reason=device-gone|navigate`
 - executed how (log-asserted; ⌨/🖱 steps user-assisted at the end): (a) select Pixel 4 → `/sdcard/` listed
-  (AC1); (b) open DCIM → Camera, timing + UI responsive (AC6); (c) Back/Forward/Up/breadcrumb (AC2);
+  (AC1); (b) open DCIM → Camera: `entries=7948`, `apply rows=7948 mainMs` < 100, signpost interval (AC6); (c) Back/Forward/Up/breadcrumb (AC2);
   (d) re-enter Camera → `source=cache` < 100 ms then `refresh changed=false` (AC5); (e) ⌘↑ from
   `/sdcard/` to `/`, open `data` (AC7 denied); an already-empty folder found with `adb shell find /sdcard
   -maxdepth 3 -type d -empty` (AC7 empty); not-found is covered by the live `lstat`/`list` test on a missing
   path and fake-server tests (no UI path reaches a missing folder without file operations); (f) **no files
   are created on the phone (user's decision)**: AC6 uses Camera (7,948); AC10 uses fixtures, plus any
   existing non-ASCII names found with `adb shell find /sdcard -maxdepth 4 -name '*[! -~]*'`;
-  (g) unplug during Camera listing (AC8); (h) user: sort headers, ⌘⇧., ⌘R, multi-select, type-select (AC3, AC4, AC9)
+  (g) unplug during Camera listing → `listing cancelled reason=device-gone` within 1 s, no later `phase=` from that store (AC8); (h) user: sort headers, ⌘⇧., ⌘R, multi-select, type-select (AC3, AC4, AC9)
 
 ### R6 — Docs (S)
 - `docs/ARCHITECTURE.md` (AdbSyncClient, Browser, AppKitBridges, test targets), `README.md`

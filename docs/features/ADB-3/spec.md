@@ -57,13 +57,14 @@ goal 2 (native: Finder-like table, breadcrumbs, Back/Forward/Up, type-to-select,
 | Case | Expected behaviour | Decided by |
 |------|--------------------|-----------|
 | Device without `ls_v2` | Falls back to `LIST` (32-bit sizes) | AOSP |
-| 0 entries returned | `LST2`: error≠0 → not found (2) / other errno; else `shell: test -r -a -x` → denied or empty | live probe |
+| 0 entries returned | `LST2`: error≠0 → not found (2) / other errno; else `shell:test -r P -a -x P && echo ok \|\| echo denied` (P quoted by `AdbShell`; `shell:` v1 has no exit code, so the marker is parsed) → `denied` = permission denied, `ok` = empty. Live: `/data` → denied, `/sdcard/Download` and an empty `/sdcard/Android/media/…` folder → ok | live probe |
 | Path > 1024 bytes | `AdbError.invalidRequest`, no request sent | AOSP limit |
 | Symlink entry (e.g. `/sdcard`) | Kind "Alias"; open lists `path/` | assumption |
 | Listing connection dies (unplug, server restart) | Error state; next navigation reconnects | assumption |
 | Navigate away while a listing is in flight | Previous listing cancelled, result discarded | CLAUDE.md cancellation |
 | Device switched in sidebar | Browser resets to `/sdcard/` for that device; per-device cache keys | assumption |
 | DNT2 entry with `error≠0` | Shown with name only (size/date "—") | AOSP raw errno |
+| Device unplugged / dropped from the device list mid-listing | Browser task cancelled (`.task(id:)`), `AdbSyncClient` closes that device's connection, log `listing cancelled reason=device-gone`, no later state write | CLAUDE.md |
 
 ## Open questions
 | # | Question | My assumed answer | Needs a human? |
