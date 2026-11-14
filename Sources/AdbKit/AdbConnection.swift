@@ -61,10 +61,67 @@ public actor AdbConnection {
         try await withTimeout(timeout) { try await self.readLengthPrefixedUnbounded() }
     }
 
+    /// Opens a connection to a device service: `host:transport:<serial>`, then `service`
+    /// (e.g. `sync:` or `shell:<command>`).
+    public static func openDeviceService(
+        _ service: String, serial: String, host: String = defaultHost, port: UInt16 = defaultPort,
+        connectTimeout: Duration = .seconds(2), requestTimeout: Duration = .seconds(10)
+    ) async throws -> AdbConnection {
+        let connection = try await connect(host: host, port: port, timeout: connectTimeout)
+        do {
+            try await connection.request("host:transport:\(serial)", timeout: requestTimeout)
+            try await connection.request(service, timeout: requestTimeout)
+            return connection
+        } catch {
+            await connection.close()
+            throw error
+        }
+    }
+
+    /// Sends raw bytes (sync-protocol requests).
+    public func sendRaw(_ data: Data, timeout: Duration? = .seconds(10)) async throws {
+        try await withTimeout(timeout) { try await self.send(data) }
+    }
+
+    /// Returns already-buffered bytes, or waits for the next chunk from the socket.
+    public func readAvailable(timeout: Duration? = .seconds(10)) async throws -> Data {
+        let buffered = decoder.drain()
+        if !buffered.isEmpty { return buffered }
+        return try await withTimeout(timeout) { try await self.receiveChunk() }
+    }
+
+    /// Reads exactly `count` bytes.
+    public func readExactly(_ count: Int, timeout: Duration? = .seconds(10)) async throws -> Data {
+        try await withTimeout(timeout) {
+            while true {
+                if let data = await self.takeBuffered(count) { return data }
+                await self.appendToBuffer(try await self.receiveChunk())
+            }
+        }
+    }
+
+    /// Reads until the peer closes the connection (e.g. the end of a `shell:` command's output).
+    public func readToEnd(timeout: Duration? = .seconds(10)) async throws -> Data {
+        try await withTimeout(timeout) {
+            var output = await self.drainBuffer()
+            while true {
+                do {
+                    output.append(try await self.receiveChunk())
+                } catch AdbError.connectionClosed {
+                    return output
+                }
+            }
+        }
+    }
+
     /// Closes the connection. Safe to call more than once.
     public func close() {
         connection.cancel()
     }
+
+    private func takeBuffered(_ count: Int) -> Data? { decoder.take(count) }
+    private func appendToBuffer(_ data: Data) { decoder.append(data) }
+    private func drainBuffer() -> Data { decoder.drain() }
 
     // MARK: - Internals
 

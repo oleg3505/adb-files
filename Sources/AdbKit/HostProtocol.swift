@@ -59,6 +59,19 @@ public struct HostMessageDecoder: Sendable {
         }
     }
 
+    /// Removes and returns every buffered byte.
+    public mutating func drain() -> Data {
+        defer { buffer.removeAll(keepingCapacity: true) }
+        return Data(buffer)
+    }
+
+    /// Removes and returns exactly `count` bytes, or nil if fewer are buffered.
+    public mutating func take(_ count: Int) -> Data? {
+        guard buffer.count >= count else { return nil }
+        defer { buffer.removeFirst(count) }
+        return Data(buffer[0..<count])
+    }
+
     /// Decodes one payload prefixed by its length as 4 hex digits.
     public mutating func decodeLengthPrefixed() throws(AdbError) -> Data? {
         guard let payload = try peekLengthPrefixed(at: 0) else { return nil }

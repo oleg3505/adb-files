@@ -1,8 +1,24 @@
-/// Builds commands for the device's `shell:` service.
+import Foundation
+
+/// Builds and runs commands on the device's `shell:` service.
 ///
 /// Every argument that is not a literal written in this codebase must go through `quote(_:)`.
 /// Never build shell strings any other way.
 public enum AdbShell {
+    /// Runs `command` on the device and returns its combined output.
+    /// The v1 `shell:` service returns no exit status; encode results in the output instead.
+    public static func run(
+        _ command: String, serial: String, client: AdbHostClient = AdbHostClient(), timeout: Duration = .seconds(10)
+    ) async throws -> String {
+        let connection = try await AdbConnection.openDeviceService(
+            "shell:" + command, serial: serial, host: client.host, port: client.port,
+            connectTimeout: client.connectTimeout, requestTimeout: client.requestTimeout
+        )
+        defer { Task { await connection.close() } }
+        let output = try await connection.readToEnd(timeout: timeout)
+        return String(decoding: output, as: UTF8.self)
+    }
+
     /// Wraps an argument in single quotes, replacing each `'` with `'\''`, so the device shell
     /// passes it through unchanged (spaces, `$`, backticks, newlines, Cyrillic, emoji).
     public static func quote(_ argument: String) -> String {

@@ -31,6 +31,23 @@ final class FakeAdbServer: Sendable {
             try await write(String(format: "%04x", payload.utf8.count) + payload)
         }
 
+        /// Writes raw bytes.
+        func write(_ data: Data) async throws {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                connection.send(content: data, completion: .contentProcessed { error in
+                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+                })
+            }
+        }
+
+        /// Reads one sync request: 4-byte id + LE UInt32 length + path.
+        func readSyncRequest() async throws -> (id: String, path: String) {
+            let header = try await read(exactly: 8)
+            let id = String(decoding: header.prefix(4), as: UTF8.self)
+            let length = header.suffix(4).enumerated().reduce(0) { $0 | Int($1.element) << (8 * $1.offset) }
+            return (id, String(decoding: try await read(exactly: length), as: UTF8.self))
+        }
+
         func close() { connection.cancel() }
 
         private func read(exactly count: Int) async throws -> Data {

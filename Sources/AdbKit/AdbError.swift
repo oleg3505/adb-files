@@ -20,6 +20,14 @@ public enum AdbError: Error, Sendable, Equatable, LocalizedError {
     case connectionFailed(String)
     /// A request that cannot be encoded (e.g. longer than 65535 bytes).
     case invalidRequest(String)
+    /// The path does not exist on the device.
+    case notFound(String)
+    /// The shell user may not read this directory.
+    case permissionDenied(String)
+    /// The path exists but is not a directory.
+    case notADirectory(String)
+    /// The device reported this errno for the path.
+    case remoteError(path: String, errno: UInt32)
 
     public var errorDescription: String? {
         switch self {
@@ -32,6 +40,10 @@ public enum AdbError: Error, Sendable, Equatable, LocalizedError {
         case .protocolError(let detail): "Unexpected response from the ADB server: \(detail)"
         case .connectionFailed(let detail): "Could not connect to the ADB server: \(detail)"
         case .invalidRequest(let detail): "Invalid ADB request: \(detail)"
+        case .notFound(let path): "“\(path)” does not exist on the device."
+        case .permissionDenied(let path): "You don’t have permission to view “\(path)”."
+        case .notADirectory(let path): "“\(path)” is not a folder."
+        case .remoteError(let path, let errno): "The device could not open “\(path)” (error \(errno))."
         }
     }
 }
