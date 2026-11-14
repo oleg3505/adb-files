@@ -33,17 +33,17 @@ bundle via scripts — so every later milestone builds on a verified base.
   - CI pipeline.
 
 ## Acceptance criteria
-- [ ] AC1 Given a clean checkout, when `swift build` runs, then it succeeds with **zero warnings**.
-- [ ] AC2 Given a clean checkout, when `swift test` runs, then at least one test runs and passes.
-- [ ] AC3 When `scripts/build-app.sh` runs, then `build/AdbFiles.app` exists with
+- [x] AC1 Given a clean checkout, when `swift build` runs, then it succeeds with **zero warnings**.
+- [x] AC2 Given a clean checkout, when `swift test` runs, then at least one test runs and passes.
+- [x] AC3 When `scripts/build-app.sh` runs, then `build/AdbFiles.app` exists with
       `Contents/MacOS/AdbFiles`, `Contents/Info.plist`, `Contents/Resources/AppIcon.icns`, and
       `codesign --verify --deep --strict build/AdbFiles.app` passes.
-- [ ] AC4 When `scripts/run.sh` runs, then the app opens with a Dock icon, a menu bar, and one window
+- [x] AC4 When `scripts/run.sh` runs, then the app opens with a Dock icon, a menu bar, and one window
       showing a two-column split view (sidebar + detail placeholder).
 - [ ] AC5 When the bare executable is run directly (`.build/debug/AdbFiles`), then it still gets a Dock
       icon, menu bar and comes to front.
 - [ ] AC6 The window renders correctly in both light and dark mode (system colors only).
-- [ ] AC7 `AdbKit` imports neither SwiftUI nor AppKit.
+- [x] AC7 `AdbKit` imports neither SwiftUI nor AppKit.
 
 ## Edge cases
 | Case | Expected behaviour | Decided by |
@@ -60,3 +60,11 @@ bundle via scripts — so every later milestone builds on a verified base.
 | 2 | Test framework: XCTest or Swift Testing? | Swift Testing (`import Testing`), ships with Xcode 26 | no |
 | 3 | No git repo and no remote exist — how does the "draft PR" stage work? | `git init` locally, work on branch `feat/ADB-1-skeleton`, commit; skip the PR because there is no remote | answered: local git, no PR |
 | 4 | Quit on last window close? | Yes | no |
+
+## Verification notes (2026-11-14)
+- AC5 partially met: the bare executable runs with `activationPolicy == .regular` (Dock icon + menu bar)
+  and opens its window, but macOS 14+ cooperative activation does not bring it to the front when it is
+  launched from a background terminal. Via `open` (`scripts/run.sh`) it is frontmost. Accepted limitation
+  unless the user wants `activate(ignoringOtherApps:)` (deprecated, emits a warning).
+- AC6 not verified automatically: `screencapture -l` was denied (no Screen Recording permission for the
+  terminal). Needs a visual check by a human in light and dark mode.
