@@ -1,0 +1,245 @@
+import AdbKit
+import Foundation
+import Observation
+import os
+
+/// File browser state for one device in one window: current folder, history, rows, sort and filter.
+@Observable
+@MainActor
+final class BrowserStore {
+    enum Phase: Equatable {
+        case loading
+        case loaded
+        case empty
+        case denied
+        case notFound
+        case failed(String)
+    }
+
+    static let startPath = "/sdcard"
+
+    let serial: String
+    private(set) var path: String
+    private(set) var phase: Phase = .loading {
+        didSet {
+            if phase != oldValue { Logger.ui.info("browser phase=\(String(describing: self.phase), privacy: .public)") }
+        }
+    }
+    /// Sorted, filtered rows for the table.
+    private(set) var rows: [FileRow] = []
+    /// Bumped whenever `rows` changes, so the table reloads only then.
+    private(set) var rowsVersion = 0
+    /// Selected row paths.
+    private(set) var selection: Set<String> = []
+
+    var sort = FileSort() {
+        didSet {
+            guard sort != oldValue else { return }
+            Logger.ui.info("sort key=\(self.sort.key.rawValue, privacy: .public) asc=\(self.sort.ascending)")
+            rebuildRows()
+        }
+    }
+    var showHidden = false {
+        didSet {
+            guard showHidden != oldValue else { return }
+            Logger.ui.info("hidden=\(self.showHidden)")
+            rebuildRows()
+        }
+    }
+
+    var canGoBack: Bool { !backStack.isEmpty }
+    var canGoForward: Bool { !forwardStack.isEmpty }
+    var canGoUp: Bool { RemotePath.parent(of: path) != nil }
+
+    @ObservationIgnored private let listing: any DirectoryListing
+    @ObservationIgnored private let cache: ListingCache
+    @ObservationIgnored private var files: [RemoteFile] = []
+    @ObservationIgnored private var backStack: [String] = []
+    @ObservationIgnored private var forwardStack: [String] = []
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var started = false
+
+    init(serial: String, listing: any DirectoryListing, cache: ListingCache, startPath: String = BrowserStore.startPath) {
+        self.serial = serial
+        self.listing = listing
+        self.cache = cache
+        self.path = RemotePath.normalized(startPath)
+    }
+
+    // MARK: - Navigation
+
+    /// Loads the start folder once.
+    func start() {
+        guard !started else { return }
+        started = true
+        load(path)
+    }
+
+    /// Opens a row: navigates into folders and symlinks; files are ignored until Quick Look (milestone 6).
+    func open(_ row: FileRow) {
+        guard row.isNavigable else { return }
+        Logger.ui.info("open path=\(row.file.path, privacy: .public)")
+        navigate(to: row.file.path)
+    }
+
+    func navigate(to newPath: String) {
+        let target = RemotePath.normalized(newPath)
+        guard target != path else { return refresh() }
+        backStack.append(path)
+        forwardStack.removeAll()
+        load(target)
+    }
+
+    func goBack() {
+        guard let previous = backStack.popLast() else { return }
+        forwardStack.append(path)
+        load(previous)
+    }
+
+    func goForward() {
+        guard let next = forwardStack.popLast() else { return }
+        backStack.append(path)
+        load(next)
+    }
+
+    func goUp() {
+        guard let parent = RemotePath.parent(of: path) else { return }
+        navigate(to: parent)
+    }
+
+    func refresh() {
+        load(path)
+    }
+
+    func setSelection(_ paths: Set<String>) {
+        guard paths != selection else { return }
+        selection = paths
+        Logger.ui.info("selection count=\(paths.count)")
+    }
+
+    /// Stops the listing in flight; nothing this store started will write state afterwards.
+    func cancel(reason: String) {
+        if loadTask != nil { Logger.ui.info("listing cancelled reason=\(reason, privacy: .public)") }
+        loadTask?.cancel()
+        loadTask = nil
+        generation += 1
+    }
+
+    // MARK: - Loading
+
+    private func load(_ target: String) {
+        if loadTask != nil { cancel(reason: "navigate") }
+        if target != path {
+            // A refresh of the same folder keeps the selection; it is trimmed to what still exists later.
+            selection = []
+        }
+        path = target
+        generation += 1
+        let token = generation
+        loadTask = Task { [weak self] in await self?.performLoad(target, token: token) }
+    }
+
+    private func isCurrent(_ token: Int) -> Bool {
+        token == generation && !Task.isCancelled
+    }
+
+    private func performLoad(_ target: String, token: Int) async {
+        let clock = ContinuousClock()
+        let began = clock.now
+        let cached = await cache.cached(serial: serial, path: target)
+        guard isCurrent(token) else { return }
+
+        if let cached {
+            await show(cached, token: token, keepSelection: false)
+            guard isCurrent(token) else { return }
+            Logger.ui.info(
+                "navigate path=\(target, privacy: .public) source=cache entries=\(cached.count) ms=\(Self.milliseconds(clock.now - began))"
+            )
+        } else {
+            files = []
+            rows = []
+            rowsVersion += 1
+            phase = .loading
+        }
+
+        do {
+            let fresh = try await listing.list(target)
+            guard isCurrent(token) else { return }
+            let changed = await cache.store(fresh, serial: serial, path: target)
+            guard isCurrent(token) else { return }
+            if cached != nil {
+                Logger.ui.info("refresh path=\(target, privacy: .public) changed=\(changed)")
+                if changed { await show(fresh, token: token, keepSelection: true) }
+            } else {
+                await show(fresh, token: token, keepSelection: false)
+                Logger.ui.info(
+                    "navigate path=\(target, privacy: .public) source=device entries=\(fresh.count) ms=\(Self.milliseconds(clock.now - began))"
+                )
+            }
+        } catch {
+            guard isCurrent(token), !(error is CancellationError) else { return }
+            handle(error, hadCache: cached != nil, path: target)
+        }
+        if isCurrent(token) { loadTask = nil }
+    }
+
+    private func handle(_ error: Error, hadCache: Bool, path target: String) {
+        Logger.ui.error("listing failed path=\(target, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        switch error {
+        case AdbError.permissionDenied:
+            clearRows(phase: .denied)
+        case AdbError.notFound, AdbError.notADirectory:
+            Task { await cache.remove(serial: serial, path: target) }
+            clearRows(phase: .notFound)
+        default:
+            // A cached listing stays visible when only the background refresh failed.
+            if !hadCache { clearRows(phase: .failed(error.localizedDescription)) }
+        }
+    }
+
+    private func clearRows(phase newPhase: Phase) {
+        files = []
+        rows = []
+        rowsVersion += 1
+        phase = newPhase
+    }
+
+    /// Sorts off the main thread, then publishes the rows if this load is still current.
+    private func show(_ listing: [RemoteFile], token: Int, keepSelection: Bool) async {
+        let sort = self.sort
+        let showHidden = self.showHidden
+        let built = await Task.detached(priority: .userInitiated) {
+            FileSorting.rows(from: listing, sort: sort, showHidden: showHidden)
+        }.value
+        guard isCurrent(token) else { return }
+        files = listing
+        rows = built
+        rowsVersion += 1
+        if keepSelection {
+            let present = Set(built.map(\.id))
+            selection = selection.intersection(present)
+        }
+        phase = listing.isEmpty ? .empty : .loaded
+    }
+
+    private func rebuildRows() {
+        let listing = files
+        let sort = self.sort
+        let showHidden = self.showHidden
+        let token = generation
+        Task { [weak self] in
+            let built = await Task.detached(priority: .userInitiated) {
+                FileSorting.rows(from: listing, sort: sort, showHidden: showHidden)
+            }.value
+            guard let self, token == self.generation else { return }
+            self.rows = built
+            self.rowsVersion += 1
+            self.selection = self.selection.intersection(Set(built.map(\.id)))
+        }
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int64 {
+        duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000
+    }
+}
