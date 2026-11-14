@@ -20,6 +20,11 @@ struct LiveDeviceTests {
         await #expect(throws: AdbError.permissionDenied("/data")) { try await client.list("/data") }
     }
 
+    @Test func selinuxProtectedFolderIsPermissionDenied() async throws {
+        // Permission bits let `test -r` pass here, but SELinux blocks the listing.
+        await #expect(throws: AdbError.permissionDenied("/storage/emulated")) { try await client.list("/storage/emulated") }
+    }
+
     @Test func existingEmptyFolderIsEmpty() async throws {
         // An app-created folder that is empty on the test phone (verified with `find -empty`).
         let entries = try await client.list("/sdcard/Android/media/com.google.android.gms")

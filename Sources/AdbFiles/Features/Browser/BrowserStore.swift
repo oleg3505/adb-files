@@ -54,6 +54,8 @@ final class BrowserStore {
     @ObservationIgnored private let listing: any DirectoryListing
     @ObservationIgnored private let cache: ListingCache
     @ObservationIgnored private var files: [RemoteFile] = []
+    /// Display rows for `files`, built once per listing; sorting and filtering reuse them.
+    @ObservationIgnored private var builtRows: [FileRow] = []
     @ObservationIgnored private var backStack: [String] = []
     @ObservationIgnored private var forwardStack: [String] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -73,43 +75,50 @@ final class BrowserStore {
     func start() {
         guard !started else { return }
         started = true
-        load(path)
+        load(path, action: "start")
     }
 
     /// Opens a row: navigates into folders and symlinks; files are ignored until Quick Look (milestone 6).
     func open(_ row: FileRow) {
         guard row.isNavigable else { return }
         Logger.ui.info("open path=\(row.file.path, privacy: .public)")
-        navigate(to: row.file.path)
+        navigate(to: row.file.path, action: "open")
     }
 
-    func navigate(to newPath: String) {
+    /// Opens the single selected row (⌘↓ / Return).
+    func openSelection() {
+        guard selection.count == 1, let selected = selection.first, let row = rows.first(where: { $0.id == selected }) else { return }
+        open(row)
+    }
+
+    /// - Parameter action: How the user navigated (`go`, `open`, `breadcrumb`, `up`); logged for profiling.
+    func navigate(to newPath: String, action: String = "go") {
         let target = RemotePath.normalized(newPath)
         guard target != path else { return refresh() }
         backStack.append(path)
         forwardStack.removeAll()
-        load(target)
+        load(target, action: action)
     }
 
     func goBack() {
         guard let previous = backStack.popLast() else { return }
         forwardStack.append(path)
-        load(previous)
+        load(previous, action: "back")
     }
 
     func goForward() {
         guard let next = forwardStack.popLast() else { return }
         backStack.append(path)
-        load(next)
+        load(next, action: "forward")
     }
 
     func goUp() {
         guard let parent = RemotePath.parent(of: path) else { return }
-        navigate(to: parent)
+        navigate(to: parent, action: "up")
     }
 
     func refresh() {
-        load(path)
+        load(path, action: "refresh")
     }
 
     func setSelection(_ paths: Set<String>) {
@@ -120,6 +129,7 @@ final class BrowserStore {
 
     /// Stops the listing in flight; nothing this store started will write state afterwards.
     func cancel(reason: String) {
+        Logger.ui.info("browser cancel reason=\(reason, privacy: .public) inFlight=\(self.loadTask != nil)")
         if loadTask != nil { Logger.ui.info("listing cancelled reason=\(reason, privacy: .public)") }
         loadTask?.cancel()
         loadTask = nil
@@ -128,7 +138,7 @@ final class BrowserStore {
 
     // MARK: - Loading
 
-    private func load(_ target: String) {
+    private func load(_ target: String, action: String) {
         if loadTask != nil { cancel(reason: "navigate") }
         if target != path {
             // A refresh of the same folder keeps the selection; it is trimmed to what still exists later.
@@ -137,14 +147,14 @@ final class BrowserStore {
         path = target
         generation += 1
         let token = generation
-        loadTask = Task { [weak self] in await self?.performLoad(target, token: token) }
+        loadTask = Task { [weak self] in await self?.performLoad(target, action: action, token: token) }
     }
 
     private func isCurrent(_ token: Int) -> Bool {
         token == generation && !Task.isCancelled
     }
 
-    private func performLoad(_ target: String, token: Int) async {
+    private func performLoad(_ target: String, action: String, token: Int) async {
         let clock = ContinuousClock()
         let began = clock.now
         let cached = await cache.cached(serial: serial, path: target)
@@ -154,10 +164,11 @@ final class BrowserStore {
             await show(cached, token: token, keepSelection: false)
             guard isCurrent(token) else { return }
             Logger.ui.info(
-                "navigate path=\(target, privacy: .public) source=cache entries=\(cached.count) ms=\(Self.milliseconds(clock.now - began))"
+                "navigate action=\(action, privacy: .public) path=\(target, privacy: .public) source=cache entries=\(cached.count) ms=\(Self.milliseconds(clock.now - began))"
             )
         } else {
             files = []
+            builtRows = []
             rows = []
             rowsVersion += 1
             phase = .loading
@@ -174,7 +185,7 @@ final class BrowserStore {
             } else {
                 await show(fresh, token: token, keepSelection: false)
                 Logger.ui.info(
-                    "navigate path=\(target, privacy: .public) source=device entries=\(fresh.count) ms=\(Self.milliseconds(clock.now - began))"
+                    "navigate action=\(action, privacy: .public) path=\(target, privacy: .public) source=device entries=\(fresh.count) ms=\(Self.milliseconds(clock.now - began))"
                 )
             }
         } catch {
@@ -200,6 +211,7 @@ final class BrowserStore {
 
     private func clearRows(phase newPhase: Phase) {
         files = []
+        builtRows = []
         rows = []
         rowsVersion += 1
         phase = newPhase
@@ -209,12 +221,15 @@ final class BrowserStore {
     private func show(_ listing: [RemoteFile], token: Int, keepSelection: Bool) async {
         let sort = self.sort
         let showHidden = self.showHidden
-        let built = await Task.detached(priority: .userInitiated) {
-            FileSorting.rows(from: listing, sort: sort, showHidden: showHidden)
+        let (all, arranged) = await Task.detached(priority: .userInitiated) {
+            let all = FileSorting.buildRows(from: listing)
+            return (all, FileSorting.arrange(all, sort: sort, showHidden: showHidden))
         }.value
         guard isCurrent(token) else { return }
         files = listing
-        rows = built
+        builtRows = all
+        rows = arranged
+        let built = arranged
         rowsVersion += 1
         if keepSelection {
             let present = Set(built.map(\.id))
@@ -224,22 +239,24 @@ final class BrowserStore {
     }
 
     private func rebuildRows() {
-        let listing = files
+        let all = builtRows
         let sort = self.sort
         let showHidden = self.showHidden
         let token = generation
+        let began = ContinuousClock.now
         Task { [weak self] in
             let built = await Task.detached(priority: .userInitiated) {
-                FileSorting.rows(from: listing, sort: sort, showHidden: showHidden)
+                FileSorting.arrange(all, sort: sort, showHidden: showHidden)
             }.value
             guard let self, token == self.generation else { return }
             self.rows = built
             self.rowsVersion += 1
             self.selection = self.selection.intersection(Set(built.map(\.id)))
+            Logger.ui.info("arrange rows=\(built.count) ms=\(Self.milliseconds(ContinuousClock.now - began))")
         }
     }
 
-    private static func milliseconds(_ duration: Duration) -> Int64 {
+    private nonisolated static func milliseconds(_ duration: Duration) -> Int64 {
         duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000
     }
 }

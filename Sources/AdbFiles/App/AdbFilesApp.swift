@@ -6,6 +6,8 @@ struct AdbFilesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     // One device store for the whole app: every window shares the same ADB connection and device list.
     @State private var deviceStore: DeviceStore
+    // Sync clients and the listing cache, shared by all windows.
+    @State private var services = AppServices()
 
     init() {
         let store = DeviceStore()
@@ -17,7 +19,9 @@ struct AdbFilesApp: App {
     var body: some Scene {
         WindowGroup("AdbFiles") {
             RootView(store: deviceStore)
+                .environment(services)
                 .frame(minWidth: 700, minHeight: 420)
         }
+        .commands { BrowserCommands() }
     }
 }

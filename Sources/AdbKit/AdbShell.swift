@@ -30,10 +30,13 @@ public enum AdbShell {
         ([program] + arguments.map(quote)).joined(separator: " ")
     }
 
-    /// Prints `ok` when the shell user can read and enter `path`, otherwise `denied`.
-    /// The `shell:` (v1) service returns no exit status, so the result is an echoed marker.
+    /// Prints `ok` when the shell user can actually list `path`, otherwise `denied`.
+    ///
+    /// Uses a real `ls` rather than `test -r`: SELinux can deny a read that the permission bits allow
+    /// (e.g. `/storage/emulated` passes `test -r` but `ls` fails). Only used after an empty listing, so
+    /// the directory is empty or unreadable and the `ls` is cheap. The `shell:` (v1) service returns no
+    /// exit status, so the result is an echoed marker.
     public static func accessCheck(_ path: String) -> String {
-        let quoted = quote(path)
-        return "test -r \(quoted) -a -x \(quoted) && echo ok || echo denied"
+        "ls -a \(quote(path)) >/dev/null 2>&1 && echo ok || echo denied"
     }
 }

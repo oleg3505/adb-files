@@ -154,7 +154,7 @@ struct AdbSyncClientTests {
         let (client, server) = try await makeClient(device)
         defer { server.stop() }
         await #expect(throws: AdbError.permissionDenied("/data")) { try await client.list("/data") }
-        #expect(device.log.withLock { $0 }.contains("shell:test -r '/data' -a -x '/data' && echo ok || echo denied"))
+        #expect(device.log.withLock { $0 }.contains("shell:ls -a '/data' >/dev/null 2>&1 && echo ok || echo denied"))
     }
 
     @Test func emptyAndReadableIsEmpty() async throws {

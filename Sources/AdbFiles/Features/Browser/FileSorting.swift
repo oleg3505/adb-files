@@ -19,6 +19,10 @@ struct FileRow: Sendable, Hashable, Identifiable {
     let kind: String
     let sizeText: String
     let dateText: String
+    /// Position in Finder name order within the listing; precomputed so sorting compares integers.
+    var nameRank = 0
+    /// Position of `kind` in Finder name order; precomputed like `nameRank`.
+    var kindRank = 0
 
     var id: String { file.path }
     var name: String { file.name }
@@ -27,37 +31,54 @@ struct FileRow: Sendable, Hashable, Identifiable {
 }
 
 enum FileSorting {
-    /// Builds sorted, filtered rows. Pure and `Sendable`, so it runs on a background task.
+    /// Builds sorted, filtered rows in one go.
     static func rows(from files: [RemoteFile], sort: FileSort, showHidden: Bool) -> [FileRow] {
-        var kindCache: [String: String] = [:]
-        let rows = files
-            .filter { showHidden || !$0.isHidden }
-            .map { file -> FileRow in
-                FileRow(file: file, kind: kind(of: file, cache: &kindCache), sizeText: sizeText(file), dateText: dateText(file))
-            }
-        return rows.sorted { lhs, rhs in
-            if lhs.file.isDirectory != rhs.file.isDirectory { return lhs.file.isDirectory }
-            let order = compare(lhs, rhs, by: sort.key)
-            if order == .orderedSame { return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending }
-            return sort.ascending ? order == .orderedAscending : order == .orderedDescending
-        }
+        arrange(buildRows(from: files), sort: sort, showHidden: showHidden)
     }
 
-    private static func compare(_ lhs: FileRow, _ rhs: FileRow, by key: SortKey) -> ComparisonResult {
-        switch key {
-        case .name:
-            return lhs.name.localizedStandardCompare(rhs.name)
-        case .date:
-            let left = lhs.file.modificationDate ?? .distantPast
-            let right = rhs.file.modificationDate ?? .distantPast
-            return left == right ? .orderedSame : (left < right ? .orderedAscending : .orderedDescending)
-        case .size:
-            // Folder sizes are meaningless (block size), so folders compare equal and fall back to name.
-            if lhs.file.isDirectory && rhs.file.isDirectory { return .orderedSame }
-            return lhs.file.size == rhs.file.size ? .orderedSame : (lhs.file.size < rhs.file.size ? .orderedAscending : .orderedDescending)
-        case .kind:
-            return lhs.kind.localizedStandardCompare(rhs.kind)
+    /// Builds display rows (kind, size and date strings, name and kind ranks) once per listing.
+    /// The expensive part: it runs the only locale-aware string sorts.
+    static func buildRows(from files: [RemoteFile]) -> [FileRow] {
+        var kindCache: [String: String] = [:]
+        let dateStyle = Date.FormatStyle(date: .abbreviated, time: .shortened)
+        var rows = files.map { file in
+            FileRow(
+                file: file, kind: kind(of: file, cache: &kindCache), sizeText: sizeText(file),
+                dateText: file.modificationDate.map { $0.formatted(dateStyle) } ?? "—"
+            )
         }
+        let byName = rows.indices.sorted { rows[$0].name.localizedStandardCompare(rows[$1].name) == .orderedAscending }
+        for (rank, index) in byName.enumerated() { rows[index].nameRank = rank }
+        let kinds = Set(rows.map(\.kind)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        let kindRanks = Dictionary(uniqueKeysWithValues: kinds.enumerated().map { ($1, $0) })
+        for index in rows.indices { rows[index].kindRank = kindRanks[rows[index].kind] ?? 0 }
+        return rows
+    }
+
+    /// Filters and sorts already-built rows; cheap enough for every header click.
+    ///
+    /// Sorts an index array over plain integer keys instead of moving the (large) rows on every swap.
+    static func arrange(_ rows: [FileRow], sort: FileSort, showHidden: Bool) -> [FileRow] {
+        let visible = showHidden ? rows : rows.filter { !$0.file.isHidden }
+        let folder = visible.map(\.file.isDirectory)
+        let nameRank = visible.map(\.nameRank)
+        let primary: [Int64] = visible.map { row in
+            switch sort.key {
+            case .name: Int64(row.nameRank)
+            case .kind: Int64(row.kindRank)
+            case .date: Int64((row.file.modificationDate ?? .distantPast).timeIntervalSince1970 * 1000)
+            // Folder sizes are meaningless (block size), so folders tie and fall back to name.
+            case .size: row.file.isDirectory ? 0 : Int64(clamping: row.file.size)
+            }
+        }
+        let ascending = sort.ascending
+        var order = Array(visible.indices)
+        order.sort { a, b in
+            if folder[a] != folder[b] { return folder[a] }
+            if primary[a] != primary[b] { return ascending ? primary[a] < primary[b] : primary[a] > primary[b] }
+            return nameRank[a] < nameRank[b]
+        }
+        return order.map { visible[$0] }
     }
 
     static func kind(of file: RemoteFile, cache: inout [String: String]) -> String {

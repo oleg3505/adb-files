@@ -1,7 +1,7 @@
 import AdbKit
 import SwiftUI
 
-/// Detail area: connection states, device status, or (milestone 3) the file browser.
+/// Detail area: connection states, device status, or the file browser for a usable device.
 struct BrowserPlaceholderView: View {
     let store: DeviceStore
 
@@ -22,10 +22,9 @@ struct BrowserPlaceholderView: View {
         case .ready:
             if let device = store.selectedDevice {
                 if device.state.isUsable {
-                    ContentUnavailableView(
-                        device.displayName, systemImage: "iphone",
-                        description: Text("Connected. File browsing arrives in the next milestone.")
-                    )
+                    BrowserView(device: device) { serial in
+                        store.devices.contains { $0.serial == serial && $0.state.isUsable }
+                    }
                 } else {
                     DeviceStatusView(device: device)
                 }

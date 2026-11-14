@@ -24,9 +24,9 @@ struct AdbShellTests {
         #expect(AdbShell.command("mkdir -p", ["/sdcard/New Folder"]) == "mkdir -p '/sdcard/New Folder'")
     }
 
-    @Test func accessCheckQuotesPathTwice() {
-        #expect(AdbShell.accessCheck("/x") == "test -r '/x' -a -x '/x' && echo ok || echo denied")
-        #expect(AdbShell.accessCheck("/a b/it's") == "test -r '/a b/it'\\''s' -a -x '/a b/it'\\''s' && echo ok || echo denied")
+    @Test func accessCheckQuotesPath() {
+        #expect(AdbShell.accessCheck("/x") == "ls -a '/x' >/dev/null 2>&1 && echo ok || echo denied")
+        #expect(AdbShell.accessCheck("/a b/it's") == "ls -a '/a b/it'\\''s' >/dev/null 2>&1 && echo ok || echo denied")
     }
 
     @Test func quotedArgumentRoundTripsThroughRealShell() throws {
