@@ -119,7 +119,10 @@ struct TransferQueueTests {
         #expect(Set(engine.started) == ["a", "b", "x"], "device A runs 2 in order; device B is independent")
         await engine.gates["g"]?.open()
         try await waitUntil { queue.items.allSatisfy { $0.state.isFinal } }
-        #expect(engine.started.filter { $0 != "x" } == ["a", "b", "c", "d"])
+        // FIFO decides which items get the two slots; within a pair the tasks may begin in either order.
+        let onA = engine.started.filter { $0 != "x" }
+        #expect(Set(onA.prefix(2)) == ["a", "b"])
+        #expect(Set(onA.suffix(2)) == ["c", "d"])
         #expect(engine.peak("A") == 2)
     }
 

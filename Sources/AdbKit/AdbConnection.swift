@@ -214,7 +214,9 @@ public actor AdbConnection {
             return AdbError.serverNotRunning
         case .posix(.ECANCELED):
             return CancellationError()
-        case .posix(.ECONNRESET), .posix(.EPIPE):
+        case .posix(.ECONNRESET), .posix(.EPIPE), .posix(.ENODATA):
+            // ENODATA ("No message available on STREAM"): Network.framework sometimes reports the peer
+            // closing this way instead of `isComplete`, e.g. right after a shell command's output.
             return AdbError.connectionClosed
         default:
             Logger.adb.error("connection error: \(error.localizedDescription, privacy: .public)")
