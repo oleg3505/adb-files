@@ -32,6 +32,7 @@ Swift 6 language mode (strict concurrency) and macOS 14 minimum for all targets.
 | `AdbTransferSession.swift` | `actor`, one transfer slot = one `sync:` connection: `download` (via `*.adbfiles-part` + no-overwrite move), `upload` (mode + mtime), `walk`, `downloadFolder`/`uploadFolder` (skip finished files on Retry, per-file failures continue, post-order folder mtimes); 15 s inactivity limit per read/write, no overall limit; reopens after `FAIL` |
 | `AsyncLimiter.swift` | FIFO, cancellation-aware limiter; `AdbSyncClient.openTransferSession()` allows two sessions per device |
 | `TransferIO.swift` | Temp names, no-overwrite move, mtimes, local folder walk |
+| `AdbFileOperations.swift` | `rename`, `move`/`copy` (N items → per-item results), `delete` (batched `rm -r`), `makeDirectory`; commands only via `AdbShell` with `--`; `AdbShell.runChecked` reads a last-line marker; source/target checked before and results verified after (toybox `-n` is silent); case-insensitive clash checks and a temp-name case-only rename, because `/sdcard` is case-insensitive FUSE |
 | `Log.swift` | `Logger.adb` |
 
 Empty listings are ambiguous (adbd returns only `DONE` for empty, missing and unreadable folders), so
@@ -57,6 +58,11 @@ permission bits allow, e.g. `/storage/emulated`).
   - `Browser/BrowserView` — owns the store in `.task(id: serial)`; on teardown cancels it and, if the
     device is gone, calls `AdbSyncClient.disconnect()`. `BrowserCommands` (Go menu, ⌘[ ⌘] ⌘↑ ⌘↓ ⌘R ⌘⇧.)
     reach the focused window's store through `@FocusedValue(\.browser)`.
+  - `Browser/BrowserStore` file operations — one at a time (`busy`), not tied to navigation: affected folders are
+    always invalidated and failures always alerted; inline rename state (`editingPath`), delete confirmation
+    (`pendingDeletion`), dragged rows for path-bar drops (`draggingPaths`). `FileOperating` is the test seam.
+  - `Browser/ContextMenu`, `App/FileCommands` — context menu; File › New Folder ⌘⇧N, Rename, Delete… ⌘⌫ (disabled
+    while renaming), Copy Path ⌥⌘C. `BreadcrumbBar` segments accept drops (move, ⌥ copy; Finder items upload).
   - `Transfers/TransferQueue` — `@Observable @MainActor`, app-wide: per-device FIFO, two running per
     device. Final state comes from a stop reason recorded before cancelling (user → cancelled, device gone
     → failed + Retry); events carry an attempt number and are dropped once final. Keep-both names are

@@ -94,7 +94,7 @@ Clean build 0 warnings; `swift test` 20×; live suites incl. writes; import grep
 ## Risks
 | Risk | Impact | Cheapest way to find out early |
 |------|--------|-------------------------------|
-| `-n` silently skips; shell has no exit code | Reported success without effect | Post-check with `LST2` is part of R1 and has its own test |
+| `-n` silently skips; shell has no exit code | Reported success without effect | Post-check (`LST2`, or exact name via `LIST` for renames) is part of R1 and has its own test |
 | Inline editing in a view-based NSTableView fights the Coordinator's reloads | Edits lost mid-typing | No reload while `editingPath` is set; spike first in R3 |
 | Long `rm -r` blocks the shared listing connection | Browsing freezes | Shell commands use their own connection; only stats/lists use the listing one |
 | Case-insensitive FUSE storage makes `LST2` clash/post-checks lie | Silent no-op or false refusal | Case-insensitive clash checks + `LIST` exact-name post-check; live case-only rename test |

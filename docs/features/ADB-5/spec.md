@@ -12,7 +12,8 @@ context menu), goal 3 (reliable: never overwrite silently, clear error messages,
 - toybox 0.8.6: `mv [-finTv]`, `cp [-adfHiLlnPpRrsTv]` (`-a` = `-dpr`, `-n` no clobber, `-T` dest is a file),
   `rm [-fiRrv]`, `mkdir [-vp]`.
 - `-n` skips silently and still exits 0, and `shell:` (v1) returns no exit status anyway → every operation
-  pre-checks the target with `LST2` and verifies the result with `LST2` afterwards; command output is
+  pre-checks source and target and verifies the result afterwards (`LST2`; renames by exact name via `LIST`,
+  since shared storage is case-insensitive); command output is
   captured with `2>&1` plus an echoed marker for the error message.
 - Quoting does not stop a name like `-rf` from being read as an option → every command puts `--` before paths.
 
@@ -31,7 +32,7 @@ context menu), goal 3 (reliable: never overwrite silently, clear error messages,
 - **out (explicit):**
   - Undo, Trash (Android has none — deletions are permanent and the dialog says so).
   - Replace / Keep both / Stop dialogs for move/copy conflicts (refused with a message instead).
-  - Cut/paste (⌘C / ⌥⌘V) moves, dragging onto breadcrumb segments, batch rename.
+  - Cut/paste (⌘C / ⌥⌘V) moves, batch rename.
   - Quick Look itself (M6).
 
 ## Acceptance criteria
@@ -39,15 +40,15 @@ context menu), goal 3 (reliable: never overwrite silently, clear error messages,
       under its new name; an existing name, empty name or a name with `/` is refused with a message.
 - [ ] AC2 ⌘⌫ (or context menu Delete) asks for confirmation naming the item(s); confirming removes files and
       folders recursively; the listing refreshes; cancel does nothing.
-- [ ] AC3 ⌘⇧N creates `untitled folder` (`untitled folder 2`, … if taken) in the current folder and starts
+- [x] AC3 ⌘⇧N creates `untitled folder` (`untitled folder 2`, … if taken) in the current folder and starts
       inline rename on it.
-- [ ] AC4 Dragging rows onto a folder row moves them there; with ⌥ it copies (`cp -a`, timestamps kept); both
+- [x] AC4 Dragging rows onto a folder row moves them there; with ⌥ it copies (`cp -a`, timestamps kept); both
       folders' listings refresh; a name clash in the destination is refused, nothing is overwritten.
 - [ ] AC5 Copy Path puts the selected remote path(s) on the pasteboard, one per line.
 - [ ] AC6 Every operation's failure (e.g. permission denied in `/system`) shows the device's message; the UI never
       freezes; operations run off the main thread with a busy indicator.
-- [ ] AC7 Names with spaces, quotes, Cyrillic, emoji, and a leading `-` work for every operation.
-- [ ] AC8 Clean build 0 warnings; tests green; `AdbKit` imports no SwiftUI/AppKit.
+- [x] AC7 Names with spaces, quotes, Cyrillic, emoji, and a leading `-` work for every operation.
+- [x] AC8 Clean build 0 warnings; tests green; `AdbKit` imports no SwiftUI/AppKit.
 
 ## Edge cases
 | Case | Expected behaviour | Decided by |
@@ -71,3 +72,16 @@ context menu), goal 3 (reliable: never overwrite silently, clear error messages,
 |---|----------|-------------------|----------------|
 | 1 | May verification write to `/sdcard/Download/AdbFilesTest/` again (deleted afterwards)? | Yes, same rules as M4 | answered: yes, same rules as M4 |
 | 2 | Return key: Finder uses Return = rename; CLAUDE.md says Enter opens | Keep Enter = open (CLAUDE.md); rename via context/File menu and click-on-selected-name | no |
+
+## Scope change during verification (user request, 2026-11-14)
+- Dragging rows onto a path-bar (breadcrumb) segment moves them into that folder (⌥ copies); Finder items dropped
+  on a segment upload there. Originally out of scope; added at the user's request after the first UI round.
+
+## Verification notes (2026-11-14)
+- AC1 partial: inline rename with Return is in the logs (`rename begin/commit`, `b.txt` → `апвпа.txt`); Esc-cancel
+  and the clash/empty-name alerts are covered by `FileOperationsStoreTests` but not present in the UI logs.
+- AC2 partial: confirm → delete is in the logs (`confirm delete … result=confirm`, `op delete ok=1`); the cancel path
+  is unit-tested only.
+- AC5 not verified live (no `copy path` log line); unit test `copyPathsOnePerLine`.
+- AC6 partial: device error messages are shown from the fake device's output (`deviceErrorMessageIsReported`,
+  `deleteListsFailedItemsInTheAlert`); no live permission-denied probe by design (no commands outside the test folder).
