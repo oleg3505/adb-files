@@ -39,21 +39,21 @@ Probed the local adb server (1.0.41) with `nc`, and read AOSP `transport.cpp` / 
   - Settings UI for a custom adb path.
 
 ## Acceptance criteria
-- [ ] AC1 Given the adb server is running, when the app starts, then the sidebar shows the current
+- [x] AC1 Given the adb server is running, when the app starts, then the sidebar shows the current
       devices (or "No devices") within 1 s, without any process spawn.
-- [ ] AC2 Given the server is not running and adb is installed, when the app starts, then it runs
+- [x] AC2 Given the server is not running and adb is installed, when the app starts, then it runs
       `adb start-server` once and shows the device list.
-- [ ] AC3 Given the server is not running and no adb binary is found, then the detail area shows the
+- [x] AC3 Given the server is not running and no adb binary is found, then the detail area shows the
       "adb not found" screen with the brew command and a Retry button.
-- [ ] AC4 Given the app is running, when a device appears, changes state or disappears, then the
+- [x] AC4 Given the app is running, when a device appears, changes state or disappears, then the
       sidebar updates within 1 s without polling (track-devices push).
-- [ ] AC5 Given the server is killed while the app runs (`adb kill-server`), then the app restarts it
+- [x] AC5 Given the server is killed while the app runs (`adb kill-server`), then the app restarts it
       and resumes tracking, with no freeze and no crash.
 - [ ] AC6 Devices in `unauthorized` state show "Confirm USB debugging on your phone"; `offline` and other
       non-`device` states are shown dimmed with their state; only `device` is selectable for browsing.
-- [ ] AC7 Unit tests cover framing, `FAIL` handling, `devices-l` parsing from byte fixtures (incl. the
+- [x] AC7 Unit tests cover framing, `FAIL` handling, `devices-l` parsing from byte fixtures (incl. the
       edge cases below), adb path lookup, and the host client against an in-process fake server.
-- [ ] AC8 `swift build` (clean) has zero warnings; `AdbKit` still imports no SwiftUI/AppKit.
+- [x] AC8 `swift build` (clean) has zero warnings; `AdbKit` still imports no SwiftUI/AppKit.
 
 ## Edge cases
 | Case | Expected behaviour | Decided by |
@@ -75,3 +75,12 @@ Probed the local adb server (1.0.41) with `nc`, and read AOSP `transport.cpp` / 
 | 1 | Do you have a physical phone to verify the `unauthorized` state? | Answered: a phone is connected; used for live `unauthorized`/`device` checks alongside the emulator | answered |
 | 2 | How to simulate "adb missing" for verification? | Env var `ADBFILES_ADB_PATH` overrides lookup (debug aid, documented in README); set to a non-existent path with the server killed | no |
 | 3 | Which adb path wins if several exist? | Order from CLAUDE.md: Homebrew arm64, `/usr/local`, Android SDK, then `$PATH` | no |
+
+## Verification notes (2026-11-14)
+- AC6 partially verified live: `offline`/`authorizing` → `device` transitions on the emulator and on the
+  Pixel 4 replug were logged and rendered; `unauthorized` could not be produced (revoking authorizations on
+  the phone did not trigger the prompt) and the user chose to skip it. Covered by parser fixtures only;
+  the "selection refused" path was not exercised live.
+- Found during verification and fixed in R4: each window created its own `DeviceStore` (two ADB
+  connections, duplicated updates). The store is now owned by `AdbFilesApp` and shared by all windows;
+  tracking starts in `App.init`, which also brought first-list latency from up to 1098 ms to 319–487 ms.

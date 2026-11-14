@@ -13,13 +13,32 @@ The authoritative project layout and constraints are in [CLAUDE.md](../CLAUDE.md
 
 Swift 6 language mode (strict concurrency) and macOS 14 minimum for all targets.
 
+## AdbKit (`Sources/AdbKit`)
+
+| File | Role |
+|------|------|
+| `Models.swift` | `Device`, `DeviceState` (incl. `.noPermissions`, `.unknown`) |
+| `AdbError.swift` | Typed errors with user-readable descriptions |
+| `HostProtocol.swift` | Request encoding (`%04x` + payload) and the incremental `HostMessageDecoder` |
+| `DeviceListParser.swift` | `host:devices-l` / `track-devices-l` lines (format from AOSP `transport.cpp`) |
+| `AdbConnection.swift` | `actor` over `NWConnection`: connect / request / read with timeouts; Task cancellation cancels the socket |
+| `AdbHostClient.swift` | `version()`, `devices()`, `trackDevices()` (`AsyncThrowingStream`) |
+| `AdbServerLauncher.swift` | Finds `adb` (CLAUDE.md order, `ADBFILES_ADB_PATH` override) and runs `adb start-server` |
+| `Log.swift` | `Logger.adb` |
+
 ## App (`Sources/AdbFiles`)
 
-- `App/` — `AdbFilesApp` (`@main`, scenes), `AppDelegate` (activation policy, quit on last window),
-  `RootView` (`NavigationSplitView`).
+- `App/` — `AdbFilesApp` (`@main`, scenes, **owns the single `DeviceStore`** and starts it in `init`),
+  `AppDelegate` (activation policy, quit on last window), `RootView` (`NavigationSplitView`).
 - `Features/<Feature>/` — views and their `@Observable` models, one folder per feature.
+  - `Devices/DeviceStore` — `@Observable @MainActor`. Loop: `trackDevices()` → on `serverNotRunning`
+    start the server once per failure streak → on stream end reconnect with backoff 0.5 s → 5 s.
+    Phases: `connecting`, `adbMissing`, `failed`, `ready`.
 - `Services/` — cross-cutting services; `Log.swift` holds `Logger.ui` / `Logger.transfer`
-  (subsystem `dev.local.AdbFiles`). `Logger.adb` will live in `AdbKit`.
+  (subsystem `dev.local.AdbFiles`, same as `Logger.adb`).
+
+Filter logs with `log stream --level info --predicate 'subsystem == "dev.local.AdbFiles"'`
+(use `/usr/bin/log` in zsh, where `log` is a builtin).
 
 ## Packaging
 
