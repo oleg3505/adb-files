@@ -1,0 +1,83 @@
+# ADB-6 — evidence
+
+No remote, so no PR (local branch, merge on the user's word). App lines come from
+`/usr/bin/log show --info --predicate 'subsystem == "dev.local.AdbFiles"'`. Device: Pixel 4, `DCIM/Camera` holds
+7,948 entries. The only device writes were for AC5, all inside `/sdcard/Download/AdbFilesTest` (user-approved). The
+folder was removed afterwards (`ls` → "No such file or directory").
+
+### Verification
+- build: clean `swift build --build-tests` → 0 warnings, after every requirement.
+- tests: 247 passed (was 208). The full suite ran 20× → 0 failures.
+- live (read-only): `ADB_TEST_SERVER=1 ADB_TEST_SERIAL=9A251FFAZ0073G swift test --filter Live` → 21 passed. This
+  includes `cameraJpegThumbnailFromA64KBPrefix`: a 64 KB prefix of a camera JPEG yields its EXIF thumbnail. Write
+  suites were skipped by design (writes were approved for AC5 only).
+- `AdbKit` imports: `grep -rnE "^import (SwiftUI|AppKit|Quartz)" Sources/AdbKit` → 0.
+- mutation checks (each restored afterwards):
+  - Removing the binder's path+token check fails 4 `ThumbnailBinderTests`, including
+    `recycledCellDropsTheLateResultAndCancelsTheOldRequest`.
+  - Removing the preview controller's token guards *and* its post-download cancellation check fails
+    `lateCompletionOfASupersededRequestIsIgnored`. With only one of the two layers removed the test still passes:
+    the other layer catches it.
+
+### Executed (user-assisted; results checked against the logs)
+- **R1 spike**: `QLPreviewPanel` driven from the table works when the app is launched as a bundle (`open`). A bare
+  terminal executable never became active, so the responder chain failed. Spike code was reverted before R1.
+- **R2**: a real Pixel JPEG gives a 283×504 embedded thumbnail (15,945 bytes) from 64 KB; 16 KB is not enough.
+  ImageIO decodes a *truncated main image* even with `…FromImageIfAbsent = false`, so `ExifThumbnail` extracts
+  the complete IFD1 JPEG itself.
+- **R3 Quick Look** (AC1, AC2):
+  - Space on a photo → `preview open count=1`, `preview wait ms=0`, `preview ready … source=device ms=183`.
+  - Second open → `source=cache ms=0`.
+  - Holding ↓ with the panel open → 32 photos followed; 15 superseded downloads logged as `preview cancelled`, with
+    no alert.
+  - Video → `….mp4 source=device ms=2892`.
+  - PDF → `/sdcard/Download/1139695152479732.pdf source=device ms=50`.
+  - 3 selected → `preview open count=3` (3 × `ready`).
+  - Context menu → Quick Look (user-observed).
+- **R4 thumbnails** (AC3, AC4, AC6):
+  - First screen: listing done 22:30:04.719 → 16 thumbnails by 22:30:05.688 (≈ 1 s).
+  - 149 of 155 device reads were `bytes=65536`. The PANO JPEG without an EXIF thumbnail took a full read
+    (4,832,836 bytes); PNGs took full reads.
+  - Per-thumbnail ms: p50 65, p95 347. Batches: max `apply thumbs … mainMs=1.49`. 29 `thumb cancel` while
+    scrolling. No wrong thumbnails (user-observed).
+  - Relaunch: Large rows kept (`rowSize=large`). None of the 10 device reads after relaunch was for a file read
+    before; all repeats came from the disk cache (`thumb source=disk` ×14 in the later run).
+  - Small rows: `rowSize=small`, 16 pt thumbnails (user-observed).
+- **AC5** (two 1 GB uploads, `drop upload items=2`, 2 × `transfer start`, ≈ 10 MB/s each):
+  - Space on a photo during both uploads → `preview wait ms=0`, `preview ready … ms=1036`.
+  - Thumbnails kept appearing, but only from the disk cache (`thumb source=disk` ×14).
+  - Device thumbnail reads during transfers were **not** observed live, because the `DCIM/Camera` listing itself
+    timed out under that load (see Deferred). The interactive connection is independent of transfer slots by unit
+    test (`interactiveSessionIsIndependentOfTransferSlots`, peak 3).
+- **Regression checklist (ADB-5)**:
+  - `promise write url=…/a.txt` (drag to Finder)
+  - `drop upload items=2` (Finder → table)
+  - `drop op=move … dest=…/sub` and `drop op=copy … dest=…/sub` (⌥)
+  - `drop op=move … via=breadcrumb`
+  - `open path=…/sub` (Return)
+  - `rename commit` of a name typed with a space (`прп р .txt`): Space typed into the name, no Quick Look
+  - type-select (user-observed)
+
+### Found during verification and fixed
+- Truncated JPEGs decoded as partial images: see R2 above (`ExifThumbnail`).
+- Decoding ran on the `ThumbnailService` actor, so there was never more than 1 decode at a time
+  (`atMostTwoDecodesAtOnce` peaked at 1) → decoding moved to a detached task after the decode gate.
+- `PreviewController` hung the compiler (type inference in a large `Task` closure) → the loop moved into a method.
+
+### Not verified
+- AC4 "a changed file gets a new thumbnail" on hardware (unit test only; by design, no writes outside AC5).
+- Device-gone during a preview download on hardware (unit test `deviceGoneMidDownloadStopsTheSpinnerWithAnAlert`).
+
+### Notes
+- A file dragged to Finder while both transfer slots were busy waited in the queue. Meanwhile it was moved into
+  `sub`, so the download failed with "No such file or directory" and Retry. This is ADB-4 queue behaviour, not an
+  ADB-6 change.
+- Per-browser cancellation unbinds only that browser's requests (per-waiter cancel), not `cancelAll`. Another
+  window may show the same device. `cancelAll` runs when the device leaves.
+
+### Deferred to M7 (user decision, 2026-11-14)
+- **Listing timeout under transfer load**: the 10 s *total* listing timeout made `DCIM/Camera` fail 4× during two
+  1 GB uploads (an earlier run under the same load took 7.5 s). Proposed fix: a 10 s inactivity timeout.
+- **Ask on upload name conflicts**: uploads silently keep both (`big 1 2.bin`, `big 3.bin`; ADB-4 AC10). The user
+  wants names checked first, with Replace / Keep Both / Skip.
+- The drag hint next to the cursor (from ADB-5).

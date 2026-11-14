@@ -34,6 +34,8 @@ gets a Dock icon and a menu bar. macOS may not bring it to the front when launch
 | ⌥⌘C | Copy path |
 | ⇧⌘D, ⌘U | Download to…, Upload… |
 | drag onto a folder row / path segment | Move (⌥ = copy) |
+| Space | Quick Look the selection (↑/↓ follow; Space or Esc closes) |
+| View › Small Rows / Large Rows | Row height; Large shows bigger photo thumbnails |
 
 ## Testing and debugging aids
 
@@ -44,6 +46,9 @@ gets a Dock icon and a menu bar. macOS may not bring it to the front when launch
 | `ADB_TEST_WRITE=1` (with `ADB_TEST_SERIAL`) | Also runs `LiveWriteTests` / `LiveTransferQueueTests`, which write **only** to `/sdcard/Download/AdbFilesTest` and remove it afterwards    |
 | `ADBFILES_ADB_PATH=/path/to/adb`            | Uses this adb binary instead of the lookup; a non-existent path simulates "adb not found" (with the server stopped)                        |
 | `ADBFILES_START_PATH=/sdcard/DCIM`          | The browser opens this folder instead of `/sdcard`                                                                                         |
+
+Caches: thumbnails in `~/Library/Caches/AdbFiles/thumbs/<serial>/` (safe to delete), Quick Look copies in
+`~/Library/Caches/AdbFiles/preview/` (cleared at every launch).
 
 App logs: `/usr/bin/log stream --level info --predicate 'subsystem == "dev.local.AdbFiles"'`.
 

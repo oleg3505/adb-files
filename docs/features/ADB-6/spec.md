@@ -24,9 +24,10 @@ prefix of each file, cached on disk; preview never queued behind big transfers).
 ## Scope
 - in:
   - AdbKit: `AdbTransferSession.readPrefix(_:maxBytes:)` (RECV that stops early and reopens next time);
-    `AdbSyncClient.openInteractiveSession()` with its own limit of 1.
+    `AdbSyncClient.openInteractiveSession(priority:)` with its own limit of 1 (`.high` for previews);
+    `AsyncLimiter.acquire(priority:)`.
   - App: `ThumbnailService` (actor): disk cache `~/Library/Caches/AdbFiles/thumbs/<serial>/` keyed by path, size and
-    mtime; in-memory cache; at most 2 generations at once; requests only for visible rows, cancelled when rows
+    mtime; in-memory cache; device reads one at a time (the interactive connection), at most 2 decodes at once; requests only for visible rows, cancelled when rows
     scroll away; `os_signpost` "thumbnail".
   - `PreviewController`: Space toggles `QLPreviewPanel` for the selection; files are downloaded first to
     `~/Library/Caches/AdbFiles/preview/<serial>/` (reused while size+mtime match; cleared at launch); a spinner
@@ -36,17 +37,18 @@ prefix of each file, cached on disk; preview never queued behind big transfers).
   size limit UI (the thumbnail cache can be deleted by macOS as any Caches folder).
 
 ## Acceptance criteria
-- [ ] AC1 Space on a selected file downloads it (spinner) and opens Quick Look; Space or Esc closes it; ↑/↓ in the
+- [x] AC1 Space on a selected file downloads it (spinner) and opens Quick Look; Space or Esc closes it; ↑/↓ in the
       table update the panel to the newly selected file.
-- [ ] AC2 Quick Look works for a photo, a PDF/text file and a video; a second open of an unchanged file reuses the
+- [x] AC2 Quick Look works for a photo, a PDF/text file and a video; a second open of an unchanged file reuses the
       cached copy without downloading.
-- [ ] AC3 With Large rows, `DCIM/Camera` shows photo thumbnails for the visible rows within ~2 s, reading ≤ 64 KB per
+- [x] AC3 With Large rows, `DCIM/Camera` shows photo thumbnails for the visible rows within ~2 s, reading ≤ 64 KB per
       JPEG; scrolling stays smooth (main thread < 16 ms per batch); off-screen requests are cancelled.
-- [ ] AC4 Thumbnails come from the disk cache on the next visit / app launch (no device reads); a changed file
+- [x] AC4 Thumbnails come from the disk cache on the next visit / app launch (no device reads); a changed file
       (size or mtime) gets a new thumbnail.
-- [ ] AC5 At most 2 thumbnail generations run at once; Quick Look and thumbnails keep working while 2 transfers run.
-- [ ] AC6 The row size choice persists across launches; Small rows show 16 pt thumbnails.
-- [ ] AC7 Clean build 0 warnings; tests green; `AdbKit` imports no SwiftUI/AppKit.
+- [~] AC5 At most 2 thumbnail generations run at once; Quick Look and thumbnails keep working while 2 transfers run.
+      (Partly verified: see evidence — large-folder listing times out under load, deferred to M7.)
+- [x] AC6 The row size choice persists across launches; Small rows show 16 pt thumbnails.
+- [x] AC7 Clean build 0 warnings; tests green; `AdbKit` imports no SwiftUI/AppKit.
 
 ## Edge cases
 | Case | Expected behaviour | Decided by |
