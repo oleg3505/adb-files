@@ -3,6 +3,38 @@ import os
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Callbacks for editing, context menus and moving rows within the device.
+struct FileTableActions {
+    /// Whether a file operation may start now (one at a time).
+    var canOperate = false
+    var beginRename: (String) -> Void = { _ in }
+    var commitRename: (_ path: String, _ newName: String) -> Void = { _, _ in }
+    var cancelRename: () -> Void = {}
+    /// Rows dragged onto a folder row of the same table: move, or copy with ⌥.
+    var moveRows: (_ paths: [String], _ folder: String, _ copy: Bool) -> Void = { _, _, _ in }
+    /// Items for the context menu: the clicked row (nil = background) and the selection after the click.
+    var menuItems: (_ clicked: FileRow?, _ selection: [FileRow]) -> [NSMenuItem] = { _, _ in [] }
+    /// A drag of rows started (paths) or ended (empty), so other drop targets can move them.
+    var dragChanged: (_ paths: [String]) -> Void = { _ in }
+}
+
+/// A menu item that runs a closure.
+final class ClosureMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(_ title: String, enabled: Bool = true, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(fire), keyEquivalent: "")
+        target = self
+        isEnabled = enabled
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func fire() { handler() }
+}
+
 /// Finder-like file list backed by `NSTableView` (view-based, so only visible rows are built).
 struct FileTableView: NSViewRepresentable {
     /// The folder being shown; when it changes the table scrolls back to the top, like Finder.
@@ -19,6 +51,9 @@ struct FileTableView: NSViewRepresentable {
     let promise: (FileRow) -> NSFilePromiseProvider?
     /// Finder items dropped on the table (`folder` nil) or onto a folder row.
     let onDropFiles: (_ urls: [URL], _ folder: FileRow?) -> Void
+    /// The row whose name is being edited inline, if any.
+    var editingPath: String?
+    var actions = FileTableActions()
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -45,11 +80,17 @@ struct FileTableView: NSViewRepresentable {
         table.delegate = context.coordinator
         table.target = context.coordinator
         table.doubleAction = #selector(Coordinator.doubleClicked(_:))
+        table.action = #selector(Coordinator.clicked(_:))
+        let menu = NSMenu()
+        menu.delegate = context.coordinator
+        table.menu = menu
         table.onOpenSelection = { [weak coordinator = context.coordinator] in coordinator?.openSelection() }
         table.setAccessibilityLabel("Files")
-        table.registerForDraggedTypes([.fileURL])
+        // .fileURL for Finder items; the file-promise types so our own rows (dragged as promises) can be
+        // dropped onto a folder row of this table to move/copy them.
+        table.registerForDraggedTypes([.fileURL] + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) })
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
-        table.setDraggingSourceOperationMask([], forLocal: true)
+        table.setDraggingSourceOperationMask([.move, .copy], forLocal: true)
 
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -66,7 +107,7 @@ struct FileTableView: NSViewRepresentable {
     // MARK: - Coordinator
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuDelegate {
         struct ColumnSpec {
             let key: SortKey
             let title: String
@@ -89,6 +130,14 @@ struct FileTableView: NSViewRepresentable {
         private var hasLoggedValidate = false
         private var isApplying = false
         private let icons = IconCache()
+        /// Path being edited inline, and whether Esc ended the edit.
+        private var editing: String?
+        private var editCancelled = false
+        /// Rows dragged inside this table (for move/copy onto a folder row).
+        private var draggedPaths: [String] = []
+        /// Finder's "slow click on a selected name starts rename".
+        private var lastClickedRow = -1
+        private var pendingRename: Task<Void, Never>?
 
         func update(with parent: FileTableView) {
             self.parent = parent
@@ -96,7 +145,8 @@ struct FileTableView: NSViewRepresentable {
             isApplying = true
             defer { isApplying = false }
 
-            if parent.rowsVersion != version {
+            // Never reload under an inline edit: the field would be recycled mid-typing.
+            if parent.rowsVersion != version, editing == nil {
                 let clock = ContinuousClock()
                 let started = clock.now
                 rows = parent.rows
@@ -119,6 +169,96 @@ struct FileTableView: NSViewRepresentable {
             if table.sortDescriptors.first != descriptor {
                 table.sortDescriptors = [descriptor]
             }
+            syncEditing(with: parent.editingPath, in: table)
+        }
+
+        // MARK: Inline rename
+
+        private func syncEditing(with path: String?, in table: NSTableView) {
+            guard path != editing else { return }
+            if let path, let row = rows.firstIndex(where: { $0.id == path }) {
+                table.scrollRowToVisible(row)
+                guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView,
+                      let field = cell.textField else { return }
+                editing = path
+                editCancelled = false
+                field.isEditable = true
+                field.delegate = self
+                table.window?.makeFirstResponder(field)
+                // Like Finder: select the name without its extension.
+                let name = field.stringValue as NSString
+                let stemLength = name.pathExtension.isEmpty || rows[row].file.isDirectory
+                    ? name.length : name.length - name.pathExtension.count - 1
+                field.currentEditor()?.selectedRange = NSRange(location: 0, length: max(0, stemLength))
+            } else if path == nil, let current = editing, let row = rows.firstIndex(where: { $0.id == current }),
+                      let field = (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? NSTableCellView)?.textField {
+                editing = nil
+                field.abortEditing()
+                field.isEditable = false
+            } else {
+                editing = nil
+            }
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                editCancelled = true
+                (control as? NSTextField)?.abortEditing()
+                finishEditing(control as? NSTextField)
+                return true
+            }
+            return false
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            finishEditing(notification.object as? NSTextField)
+        }
+
+        private func finishEditing(_ field: NSTextField?) {
+            guard let path = editing else { return }
+            editing = nil
+            field?.isEditable = false
+            if editCancelled {
+                field?.stringValue = (path as NSString).lastPathComponent
+                parent?.actions.cancelRename()
+            } else {
+                parent?.actions.commitRename(path, field?.stringValue ?? "")
+            }
+            table?.window?.makeFirstResponder(table)
+            // Rows may have changed while editing; apply them now.
+            if let parent { update(with: parent) }
+        }
+
+        @objc func clicked(_ sender: NSTableView) {
+            let row = sender.clickedRow
+            defer { lastClickedRow = row }
+            pendingRename?.cancel()
+            guard row >= 0, row == lastClickedRow, sender.clickedColumn == 0, sender.selectedRowIndexes == [row],
+                  parent?.actions.canOperate == true, rows.indices.contains(row) else { return }
+            let path = rows[row].id
+            pendingRename = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.2))
+                guard !Task.isCancelled, let self, self.lastClickedRow == row else { return }
+                self.parent?.actions.beginRename(path)
+            }
+        }
+
+        // MARK: Context menu
+
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            menu.removeAllItems()
+            guard let table, let parent else { return }
+            let row = table.clickedRow
+            var clicked: FileRow?
+            if rows.indices.contains(row) {
+                clicked = rows[row]
+                if !table.selectedRowIndexes.contains(row) {
+                    // Like Finder: right-clicking an unselected row selects just that row.
+                    table.selectRowIndexes([row], byExtendingSelection: false)
+                }
+            }
+            let selection = table.selectedRowIndexes.compactMap { rows.indices.contains($0) ? rows[$0] : nil }
+            for item in parent.actions.menuItems(clicked, clicked == nil ? [] : selection) { menu.addItem(item) }
         }
 
         private func applySelection(_ selection: Set<String>, to table: NSTableView) {
@@ -174,15 +314,40 @@ struct FileTableView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+            draggedPaths = rowIndexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
+            parent?.actions.dragChanged(draggedPaths)
             Logger.transfer.info("promise drag began rows=\(rowIndexes.count)")
+        }
+
+        func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+            draggedPaths = []
+            parent?.actions.dragChanged([])
+        }
+
+        /// ⌥ during a drag narrows the source mask to copy (the cursor shows "+"); that, not the key state at drop
+        /// time, decides between move and copy.
+        static func isCopy(_ info: any NSDraggingInfo) -> Bool {
+            !info.draggingSourceOperationMask.contains(.move)
+        }
+
+        /// A valid folder row to move/copy the dragged rows into, or nil.
+        private func internalDropTarget(row: Int, operation: NSTableView.DropOperation) -> FileRow? {
+            guard parent?.actions.canOperate == true, operation == .on, rows.indices.contains(row) else { return nil }
+            let target = rows[row]
+            guard target.file.isDirectory, !draggedPaths.isEmpty else { return nil }
+            // Not onto one of the dragged rows, and never a folder into itself or its descendant.
+            guard !draggedPaths.contains(where: { target.id == $0 || target.id.hasPrefix($0 + "/") }) else { return nil }
+            return target
         }
 
         func tableView(
             _ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int,
             proposedDropOperation dropOperation: NSTableView.DropOperation
         ) -> NSDragOperation {
-            // Rows dragged within this table are not a move or copy target (that is milestone 5).
-            if info.draggingSource as? NSTableView === tableView { return [] }
+            if info.draggingSource as? NSTableView === tableView {
+                guard internalDropTarget(row: row, operation: dropOperation) != nil else { return [] }
+                return Self.isCopy(info) ? .copy : .move
+            }
             guard info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) else {
                 Logger.transfer.info("drop refused: no file URLs on the pasteboard")
                 return []
@@ -202,6 +367,13 @@ struct FileTableView: NSViewRepresentable {
             _ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation
         ) -> Bool {
             hasLoggedValidate = false
+            if info.draggingSource as? NSTableView === tableView {
+                guard let target = internalDropTarget(row: row, operation: dropOperation) else { return false }
+                let copy = Self.isCopy(info)
+                Logger.ui.info("drop op=\(copy ? "copy" : "move", privacy: .public) count=\(self.draggedPaths.count) dest=\(target.id, privacy: .public)")
+                parent?.actions.moveRows(draggedPaths, target.id, copy)
+                return true
+            }
             let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
             Logger.transfer.info("drop accept urls=\(urls.count)")
             guard !urls.isEmpty else { return false }
@@ -218,6 +390,8 @@ struct FileTableView: NSViewRepresentable {
         }
 
         @objc func doubleClicked(_ sender: NSTableView) {
+            pendingRename?.cancel()
+            lastClickedRow = -1
             let row = sender.clickedRow
             guard rows.indices.contains(row) else { return }
             parent?.onOpen(rows[row])

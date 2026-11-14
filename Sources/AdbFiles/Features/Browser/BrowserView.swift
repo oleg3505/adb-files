@@ -38,7 +38,12 @@ struct BrowserView: View {
     @ViewBuilder
     private func content(_ store: BrowserStore) -> some View {
         VStack(spacing: 0) {
-            BreadcrumbBar(path: store.path) { store.navigate(to: $0, action: "breadcrumb") }
+            BreadcrumbBar(
+                path: store.path, navigate: { store.navigate(to: $0, action: "breadcrumb") },
+                draggingPaths: store.draggingPaths,
+                moveRows: { paths, folder, copy in store.transfer(paths, into: folder, copy: copy) },
+                uploadFiles: { urls, folder in upload(urls, into: folder, store: store) }
+            )
             Divider()
             if store.phase == .loaded || store.phase == .empty {
                 // An empty folder still shows the (empty) table, like Finder, so it accepts drops everywhere.
@@ -46,7 +51,9 @@ struct BrowserView: View {
                     folderPath: store.path, rows: store.rows, rowsVersion: store.rowsVersion, selection: store.selection, sort: store.sort,
                     onSelect: store.setSelection, onOpen: store.open, onSort: { store.sort = $0 },
                     promise: { row in promise(for: row, serial: store.serial) },
-                    onDropFiles: { urls, folder in upload(urls, into: folder?.file.path ?? store.path, store: store) }
+                    onDropFiles: { urls, folder in upload(urls, into: folder?.file.path ?? store.path, store: store) },
+                    editingPath: store.editingPath,
+                    actions: tableActions(store)
                 )
                 .overlay {
                     if store.phase == .empty {
@@ -58,8 +65,67 @@ struct BrowserView: View {
                 BrowserStateView(phase: store.phase, retry: store.refresh)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            if let busy = store.busy {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(Self.busyText(busy)).font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.bar)
+                .overlay(alignment: .top) { Divider() }
+                .accessibilityElement(children: .combine)
+            }
             TransferStatusBar(queue: services.transfers)
         }
+        .confirmationDialog(
+            Self.deleteTitle(store.pendingDeletion ?? []),
+            isPresented: Binding(get: { store.pendingDeletion != nil }, set: { if !$0 { store.resolveDeletion(confirmed: false) } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { store.resolveDeletion(confirmed: true) }
+            Button("Cancel", role: .cancel) { store.resolveDeletion(confirmed: false) }
+        } message: {
+            Text("This can’t be undone. Android has no Trash, so the items are removed from the device permanently.")
+        }
+        .alert(
+            store.alert?.title ?? "",
+            isPresented: Binding(get: { store.alert != nil }, set: { if !$0 { store.alert = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(store.alert?.message ?? "")
+        }
+    }
+
+    private static func busyText(_ op: String) -> String {
+        switch op {
+        case "delete": "Deleting…"
+        case "move": "Moving…"
+        case "copy": "Copying on the device…"
+        case "mkdir": "Creating folder…"
+        default: "Renaming…"
+        }
+    }
+
+    private static func deleteTitle(_ paths: [String]) -> String {
+        paths.count == 1 ? "Delete “\((paths[0] as NSString).lastPathComponent)”?" : "Delete \(paths.count) items?"
+    }
+
+    private func tableActions(_ store: BrowserStore) -> FileTableActions {
+        let queue = services.transfers
+        return FileTableActions(
+            canOperate: store.canOperate,
+            beginRename: { store.beginRename($0) },
+            commitRename: { store.commitRename($0, to: $1) },
+            cancelRename: { store.cancelRename() },
+            moveRows: { paths, folder, copy in store.transfer(paths, into: folder, copy: copy) },
+            menuItems: { clicked, selection in
+                ContextMenu.items(clicked: clicked, selection: selection, store: store, queue: queue)
+            },
+            dragChanged: { store.draggingPaths = $0 }
+        )
     }
 
     @ToolbarContentBuilder
@@ -106,7 +172,10 @@ struct BrowserView: View {
         let client = services.syncClient(for: serial)
         // Debugging aid: ADBFILES_START_PATH opens another folder first (documented in README).
         let startPath = ProcessInfo.processInfo.environment["ADBFILES_START_PATH"] ?? BrowserStore.startPath
-        let newStore = BrowserStore(serial: serial, listing: client, cache: services.listingCache, startPath: startPath)
+        let newStore = BrowserStore(
+            serial: serial, listing: client, cache: services.listingCache, startPath: startPath,
+            operations: AdbFileOperations(serial: serial, client: client)
+        )
         store = newStore
         newStore.start()
         while !Task.isCancelled {

@@ -121,9 +121,15 @@ struct FileOperationsStoreTests {
 
     @Test func newFolderNumbersCaseInsensitivelyAndStartsEditing() async throws {
         let ops = FakeOperations()
-        let (store, _) = try await loaded([file("Untitled Folder", folder: true), file("untitled folder 2", folder: true)], ops: ops)
+        let before = [file("Untitled Folder", folder: true), file("untitled folder 2", folder: true)]
+        let listing = FakeListing()
+        // The refresh after mkdir returns the new folder, as the device would.
+        listing.script("/sdcard", .success(before), .success(before + [file("untitled folder 3", folder: true)]))
+        let store = makeStore(listing, ops: ops)
+        store.start()
+        try await waitUntil { store.phase == .loaded }
         store.newFolder()
-        try await waitUntil { store.busy == nil && !ops.calls.isEmpty }
+        try await waitUntil { store.busy == nil && store.rows.count == 3 }
         #expect(ops.calls == ["mkdir /sdcard/untitled folder 3"])
         #expect(store.editingPath == "/sdcard/untitled folder 3")
         #expect(store.selection == ["/sdcard/untitled folder 3"])
@@ -196,6 +202,22 @@ struct FileOperationsStoreTests {
         store.cancelRename()
         #expect(store.editingPath == nil)
         #expect(ops.calls.isEmpty)
+    }
+
+    @Test func refreshWithoutCacheKeepsRowsVisible() async throws {
+        let listing = FakeListing()
+        listing.script("/sdcard", .success([file("a"), file("b")]))
+        let cache = ListingCache()
+        let store = BrowserStore(serial: "A", listing: listing, cache: cache, operations: FakeOperations())
+        store.start()
+        try await waitUntil { store.phase == .loaded }
+        await cache.remove(serial: "A", path: "/sdcard") // what an operation does
+        listing.gate("/sdcard")
+        store.refresh()
+        try await waitUntil { listing.calls.count == 2 }
+        #expect(store.phase == .loaded, "no spinner while reloading the same folder")
+        #expect(store.rows.map(\.name) == ["a", "b"])
+        listing.release("/sdcard")
     }
 
     @Test func copyPathsOnePerLine() async throws {

@@ -220,6 +220,25 @@ final class BrowserStore {
         }
     }
 
+    /// Rows currently being dragged from this browser's table (for drops on the path bar).
+    var draggingPaths: [String] = []
+
+    /// Paths waiting for the delete confirmation dialog.
+    private(set) var pendingDeletion: [String]?
+
+    /// Asks for confirmation before deleting (⌘⌫, context menu).
+    func requestDelete(_ paths: [String]) {
+        guard canOperate, editingPath == nil, !paths.isEmpty else { return }
+        pendingDeletion = paths
+    }
+
+    func resolveDeletion(confirmed: Bool) {
+        guard let paths = pendingDeletion else { return }
+        pendingDeletion = nil
+        Logger.ui.info("confirm delete count=\(paths.count) result=\(confirmed ? "confirm" : "cancel", privacy: .public)")
+        if confirmed { delete(paths) }
+    }
+
     /// Deletes the given paths permanently (the confirmation is the caller's job).
     func delete(_ paths: [String]) {
         guard let operations, !paths.isEmpty else { return }
@@ -337,6 +356,9 @@ final class BrowserStore {
 
     private func load(_ target: String, action: String) {
         if loadTask != nil { cancel(reason: "navigate") }
+        // Reloading the folder on screen (⌘R, after an operation) keeps the current rows visible until the new
+        // listing arrives, instead of flashing a spinner.
+        let keepVisible = target == path && (phase == .loaded || phase == .empty)
         if target != path {
             // A refresh of the same folder keeps the selection; it is trimmed to what still exists later.
             selection = []
@@ -344,14 +366,14 @@ final class BrowserStore {
         path = target
         generation += 1
         let token = generation
-        loadTask = Task { [weak self] in await self?.performLoad(target, action: action, token: token) }
+        loadTask = Task { [weak self] in await self?.performLoad(target, action: action, token: token, keepVisible: keepVisible) }
     }
 
     private func isCurrent(_ token: Int) -> Bool {
         token == generation && !Task.isCancelled
     }
 
-    private func performLoad(_ target: String, action: String, token: Int) async {
+    private func performLoad(_ target: String, action: String, token: Int, keepVisible: Bool = false) async {
         let clock = ContinuousClock()
         let began = clock.now
         let cached = await cache.cached(serial: serial, path: target)
@@ -363,7 +385,7 @@ final class BrowserStore {
             Logger.ui.info(
                 "navigate action=\(action, privacy: .public) path=\(target, privacy: .public) source=cache entries=\(cached.count) ms=\(Self.milliseconds(clock.now - began))"
             )
-        } else {
+        } else if !keepVisible {
             files = []
             builtRows = []
             rows = []
@@ -380,7 +402,7 @@ final class BrowserStore {
                 Logger.ui.info("refresh path=\(target, privacy: .public) changed=\(changed)")
                 if changed { await show(fresh, token: token, keepSelection: true) }
             } else {
-                await show(fresh, token: token, keepSelection: false)
+                await show(fresh, token: token, keepSelection: keepVisible)
                 Logger.ui.info(
                     "navigate action=\(action, privacy: .public) path=\(target, privacy: .public) source=device entries=\(fresh.count) ms=\(Self.milliseconds(clock.now - began))"
                 )
