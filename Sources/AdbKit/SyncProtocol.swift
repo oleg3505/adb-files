@@ -13,7 +13,51 @@ public enum SyncProtocol {
         case listV2 = "LIS2"
         case lstat = "STAT"
         case lstatV2 = "LST2"
+        case recv = "RECV"
         case quit = "QUIT"
+    }
+
+    /// Largest `DATA` payload adbd accepts or sends (`SYNC_DATA_MAX`).
+    public static let maxDataChunk = 64 * 1024
+
+    /// Encodes `SEND <path>,<mode>`: the mode is written in decimal, like `adb push` does.
+    /// - Throws: `AdbError.invalidRequest` when the spec exceeds 1024 bytes.
+    public static func encodeSendRequest(path: String, mode: UInt32) throws(AdbError) -> Data {
+        let spec = Data("\(path),\(mode)".utf8)
+        guard spec.count <= maxPathLength else {
+            throw .invalidRequest("path is \(spec.count) bytes, maximum is \(maxPathLength)")
+        }
+        var data = Data("SEND".utf8)
+        data.appendLittleEndian(UInt32(spec.count))
+        data.append(spec)
+        return data
+    }
+
+    /// Encodes one `DATA` chunk (at most `maxDataChunk` bytes).
+    public static func encodeData(_ chunk: Data) -> Data {
+        var data = Data("DATA".utf8)
+        data.appendLittleEndian(UInt32(chunk.count))
+        data.append(chunk)
+        return data
+    }
+
+    /// Encodes the `DONE` that ends a `SEND`, carrying the file's modification time.
+    public static func encodeDone(mtime: UInt32) -> Data {
+        var data = Data("DONE".utf8)
+        data.appendLittleEndian(mtime)
+        return data
+    }
+
+    /// Parses the 8-byte status header that answers a `SEND`.
+    /// - Returns: nil for `OKAY`, or the length of the `FAIL` message that follows.
+    public static func parseStatusHeader(_ header: Data) throws(AdbError) -> Int? {
+        let bytes = [UInt8](header)
+        guard bytes.count == 8 else { throw .protocolError("status header is \(bytes.count) bytes, expected 8") }
+        switch String(decoding: bytes[0..<4], as: UTF8.self) {
+        case "OKAY": return nil
+        case "FAIL": return Int(bytes.u32(at: 4))
+        case let other: throw .protocolError("unexpected status \(other.debugDescription)")
+        }
     }
 
     /// Encodes a request.
@@ -153,6 +197,57 @@ public struct SyncListDecoder: Sendable {
             name: name, path: path, mode: buffer.u32(at: body), size: UInt64(buffer.u32(at: body + 4)),
             modificationDate: Date(timeIntervalSince1970: TimeInterval(buffer.u32(at: body + 8)))
         )
+    }
+}
+
+/// Incremental decoder for a `RECV` reply: `DATA` chunks, then `DONE`, or `FAIL` with a message.
+public struct SyncRecvDecoder: Sendable {
+    /// Decoded unit of a `RECV` reply.
+    public enum Item: Sendable, Equatable {
+        case data(Data)
+        case done
+    }
+
+    private var buffer: [UInt8] = []
+    private var offset = 0
+
+    /// Creates an empty decoder.
+    public init() {}
+
+    /// Appends received bytes.
+    public mutating func append(_ data: Data) {
+        if offset > 0, offset >= buffer.count / 2 {
+            buffer.removeFirst(offset)
+            offset = 0
+        }
+        buffer.append(contentsOf: data)
+    }
+
+    /// Decodes the next item, or returns nil when more bytes are needed.
+    /// - Throws: `AdbError.serverFailure` on `FAIL`, `.protocolError` on unexpected bytes.
+    public mutating func next() throws(AdbError) -> Item? {
+        let available = buffer.count - offset
+        guard available >= 8 else { return nil }
+        let id = String(decoding: buffer[offset..<offset + 4], as: UTF8.self)
+        let length = Int(buffer.u32(at: offset + 4))
+        switch id {
+        case "DATA":
+            guard length <= SyncProtocol.maxDataChunk else { throw .protocolError("DATA chunk of \(length) bytes") }
+            guard available >= 8 + length else { return nil }
+            let chunk = Data(buffer[offset + 8..<offset + 8 + length])
+            offset += 8 + length
+            return .data(chunk)
+        case "DONE":
+            offset += 8
+            return .done
+        case "FAIL":
+            guard available >= 8 + length else { return nil }
+            let message = String(decoding: buffer[offset + 8..<offset + 8 + length], as: UTF8.self)
+            offset += 8 + length
+            throw .serverFailure(message)
+        default:
+            throw .protocolError("unexpected sync id \(id.debugDescription)")
+        }
     }
 }
 
