@@ -12,7 +12,7 @@ struct BrowserStateView: View {
         case .loaded:
             EmptyView()
         case .empty:
-            ContentUnavailableView("Empty Folder", systemImage: "folder", description: Text("This folder has no items."))
+            ContentUnavailableView("Empty Folder", systemImage: "folder", description: Text("Drag files here to copy them to the device."))
         case .denied:
             ContentUnavailableView(
                 "Permission Denied", systemImage: "lock",

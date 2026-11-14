@@ -40,23 +40,25 @@ struct BrowserView: View {
         VStack(spacing: 0) {
             BreadcrumbBar(path: store.path) { store.navigate(to: $0, action: "breadcrumb") }
             Divider()
-            if store.phase == .loaded {
+            if store.phase == .loaded || store.phase == .empty {
+                // An empty folder still shows the (empty) table, like Finder, so it accepts drops everywhere.
                 FileTableView(
                     folderPath: store.path, rows: store.rows, rowsVersion: store.rowsVersion, selection: store.selection, sort: store.sort,
                     onSelect: store.setSelection, onOpen: store.open, onSort: { store.sort = $0 },
                     promise: { row in promise(for: row, serial: store.serial) },
                     onDropFiles: { urls, folder in upload(urls, into: folder?.file.path ?? store.path, store: store) }
                 )
+                .overlay {
+                    if store.phase == .empty {
+                        BrowserStateView(phase: .empty, retry: store.refresh)
+                            .allowsHitTesting(false)
+                    }
+                }
             } else {
                 BrowserStateView(phase: store.phase, retry: store.refresh)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .dropDestination(for: URL.self) { urls, _ in
-                        // An empty folder has no table, so it accepts Finder drops here.
-                        guard store.phase == .empty, !urls.isEmpty else { return false }
-                        upload(urls, into: store.path, store: store)
-                        return true
-                    }
             }
+            TransferStatusBar(queue: services.transfers)
         }
     }
 

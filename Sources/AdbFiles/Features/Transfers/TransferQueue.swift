@@ -16,6 +16,18 @@ final class TransferQueue {
     /// Transfers not yet finished (badge count).
     var activeCount: Int { items.filter { $0.state.isActive }.count }
 
+    /// Combined progress of unfinished transfers, for the status bar and toolbar ring.
+    var activeSummary: (fraction: Double, bytesDone: UInt64, bytesTotal: UInt64, speed: Double, eta: Duration?)? {
+        let active = items.filter { $0.state.isActive }
+        guard !active.isEmpty else { return nil }
+        let done = active.reduce(UInt64(0)) { $0 + $1.bytesDone }
+        let total = active.reduce(UInt64(0)) { $0 + max($1.bytesTotal, $1.bytesDone) }
+        let speed = active.reduce(0.0) { $0 + $1.speed }
+        let fraction = total == 0 ? 0 : min(1, Double(done) / Double(total))
+        let eta: Duration? = speed > 0 && total > done ? .seconds(Double(total - done) / speed) : nil
+        return (fraction, done, total, speed, eta)
+    }
+
     /// Called after an upload finished, so the browser can refresh that folder.
     @ObservationIgnored var onUploadFinished: ((_ serial: String, _ remoteFolder: String) -> Void)?
 
@@ -126,7 +138,7 @@ final class TransferQueue {
         let request = items[index].request
         let started = now()
         Logger.transfer.info(
-            "transfer start id=\(id.uuidString.prefix(8), privacy: .public) dir=\(request.direction.rawValue, privacy: .public) folder=\(request.isFolder)"
+            "transfer start id=\(id.uuidString.prefix(8), privacy: .public) dir=\(request.direction.rawValue, privacy: .public) folder=\(request.isFolder) to=\(destination, privacy: .public)"
         )
         let throttle = ProgressThrottle(now: now)
         let events: @Sendable (TransferEvent) -> Void = { [weak self] event in
@@ -151,8 +163,10 @@ final class TransferQueue {
     private func resolveDestination(id: UUID, attempt: Int) async -> String? {
         guard let index = current(id, attempt) else { return nil }
         let request = items[index].request
-        if let existing = items[index].resolvedName {
+        if let existing = items[index].resolvedName ?? request.fixedName {
+            // Retry, or a name chosen by the drop destination (Finder already made it unique).
             reservations.insert(reservationKey(request, existing))
+            items[index].resolvedName = existing
             return items[index].destinationPath
         }
         var candidate = request.name

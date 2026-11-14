@@ -9,7 +9,16 @@ struct TransfersButton: View {
         Button {
             isShowing.toggle()
         } label: {
-            Label("Transfers", systemImage: "arrow.up.arrow.down.circle")
+            Group {
+                if let summary = queue.activeSummary {
+                    // While transfers run, the icon becomes a progress ring (like Safari downloads).
+                    ProgressView(value: summary.fraction)
+                        .progressViewStyle(.circular)
+                        .controlSize(.small)
+                } else {
+                    Label("Transfers", systemImage: "arrow.up.arrow.down.circle")
+                }
+            }
                 .overlay(alignment: .topTrailing) {
                     if queue.activeCount > 0 {
                         Text("\(queue.activeCount)")

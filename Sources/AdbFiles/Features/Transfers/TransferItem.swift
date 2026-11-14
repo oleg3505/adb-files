@@ -17,8 +17,10 @@ struct TransferRequest: Sendable, Equatable {
     /// Remote size/mtime when known (downloads of single files).
     var size: UInt64 = 0
     var modificationDate: Date?
+    /// A name the destination already chose (Finder file promises); skips keep-both renaming.
+    var fixedName: String?
 
-    var name: String { (sourcePath as NSString).lastPathComponent }
+    var name: String { fixedName ?? (sourcePath as NSString).lastPathComponent }
 }
 
 /// One row in the transfers list.

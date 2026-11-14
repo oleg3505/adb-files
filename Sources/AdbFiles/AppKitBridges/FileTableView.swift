@@ -86,6 +86,7 @@ struct FileTableView: NSViewRepresentable {
         private var rows: [FileRow] = []
         private var version = -1
         private var folderPath: String?
+        private var hasLoggedValidate = false
         private var isApplying = false
         private let icons = IconCache()
 
@@ -182,7 +183,14 @@ struct FileTableView: NSViewRepresentable {
         ) -> NSDragOperation {
             // Rows dragged within this table are not a move or copy target (that is milestone 5).
             if info.draggingSource as? NSTableView === tableView { return [] }
-            guard info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) else { return [] }
+            guard info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) else {
+                Logger.transfer.info("drop refused: no file URLs on the pasteboard")
+                return []
+            }
+            if !hasLoggedValidate {
+                hasLoggedValidate = true
+                Logger.transfer.info("drop validate row=\(row) onFolder=\(dropOperation == .on)")
+            }
             if dropOperation == .on, rows.indices.contains(row), rows[row].file.isDirectory {
                 return .copy // into that folder
             }
@@ -193,7 +201,9 @@ struct FileTableView: NSViewRepresentable {
         func tableView(
             _ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation
         ) -> Bool {
+            hasLoggedValidate = false
             let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+            Logger.transfer.info("drop accept urls=\(urls.count)")
             guard !urls.isEmpty else { return false }
             let folder = (dropOperation == .on && rows.indices.contains(row) && rows[row].file.isDirectory) ? rows[row] : nil
             parent?.onDropFiles(urls, folder)

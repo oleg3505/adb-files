@@ -302,6 +302,37 @@ struct TransferQueueTests {
         #expect(queue.items[0].failures == ["x.bin": "denied"])
     }
 
+    @Test func fixedNameFromFinderIsUsedAsIs() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("adbfiles-q-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try Data().write(to: folder.appendingPathComponent("a.txt"))
+        let engine = FakeEngine()
+        let queue = TransferQueue(engine: engine)
+        var request = download("a.txt", to: folder.path)
+        request.fixedName = "a 2.txt"
+        queue.enqueue([request])
+        try await waitUntil { queue.items[0].state.isFinal }
+        #expect(engine.destinations == [folder.appendingPathComponent("a 2.txt").path])
+    }
+
+    @Test func activeSummaryCombinesRunningTransfers() async throws {
+        let engine = FakeEngine(gates: ["g"])
+        engine.script("a", .gated("g"))
+        engine.script("b", .gated("g"))
+        let queue = TransferQueue(engine: engine)
+        #expect(queue.activeSummary == nil)
+        queue.enqueue([download("a"), download("b")])
+        try await waitUntil { engine.started.count == 2 }
+        engine.lastEvents?(.prepared(totalBytes: 1000, files: 1)) // b: 0 of 1000
+        try await waitUntil { queue.items.contains { $0.bytesTotal == 1000 } }
+        let summary = try #require(queue.activeSummary)
+        #expect(summary.bytesTotal == 1000)
+        #expect(summary.fraction == 0)
+        await engine.gates["g"]?.open()
+        try await waitUntil { queue.activeSummary == nil }
+    }
+
     @Test func uploadCompletionNotifiesTheBrowser() async throws {
         let engine = FakeEngine()
         engine.script("bad.txt", .fail(.connectionClosed))

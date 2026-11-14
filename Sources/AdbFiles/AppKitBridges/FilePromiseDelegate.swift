@@ -46,9 +46,11 @@ final class FilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate, Sendab
         _ filePromiseProvider: NSFilePromiseProvider, writePromiseTo url: URL, completionHandler: @escaping (Error?) -> Void
     ) {
         Logger.transfer.info("promise write url=\(url.path, privacy: .public)")
+        // Write exactly where Finder asks: it already picked a unique name (e.g. "name 2.ext").
         let request = TransferRequest(
             direction: .download, serial: serial, sourcePath: file.path, isFolder: file.isDirectory,
-            targetFolder: url.deletingLastPathComponent().path, size: file.size, modificationDate: file.modificationDate
+            targetFolder: url.deletingLastPathComponent().path, size: file.size, modificationDate: file.modificationDate,
+            fixedName: url.lastPathComponent
         )
         let done = CompletionBox(completionHandler)
         let name = file.name
