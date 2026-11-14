@@ -85,3 +85,4 @@ context menu), goal 3 (reliable: never overwrite silently, clear error messages,
 - AC5 not verified live (no `copy path` log line); unit test `copyPathsOnePerLine`.
 - AC6 partial: device error messages are shown from the fake device's output (`deviceErrorMessageIsReported`,
   `deleteListsFailedItemsInTheAlert`); no live permission-denied probe by design (no commands outside the test folder).
+- Deferred to milestone 7 at the user's decision: a text hint next to the cursor while dragging (see evidence.md).

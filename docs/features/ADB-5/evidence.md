@@ -57,3 +57,12 @@ folder was removed afterwards (`ls -d …` → gone). No command targeted a path
   NWListener/NWConnection reproduction and 3,000 rapid connections were all clean, and the failures then stopped
   without any change (0/20). A connect retry was tried, did not help, and was reverted. Cause unknown; recorded here.
 - An empty commit `18fa975` ("analyze round 2 passed") was created by mistake; harmless.
+
+### Deferred: drag hint next to the cursor (user idea, 2026-11-14)
+- Requested during verification: a small text near the cursor while dragging ("Move to “X”", "Copy to …",
+  "Upload to …"). Two attempts (a floating panel, then an in-window overlay) both broke dragging *from* the table
+  (drags began but never reached Finder or the table; drops *into* the app still worked). Both attempts overrode
+  `FileNSTableView.draggingSession(_:movedTo:)`, the only part they shared — the likely cause. Reverted to 82eb784
+  and confirmed live that dragging works again. Deferred to milestone 7 (polish) at the user's decision; next try
+  should drive the hint only from drop destinations (`validateDrop`, path-bar segments) and not override the
+  table's dragging-source methods.
