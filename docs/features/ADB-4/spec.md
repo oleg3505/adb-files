@@ -60,10 +60,13 @@ mid-transfer, no partial files left behind).
 |------|--------------------|-----------|
 | Download target exists | `name 2.ext`, `name 3.ext`, … | user (keep both) / assumption on format |
 | Remote upload target exists | Same, checked with `LST2` before sending | assumption |
-| Unreadable remote file inside a folder | That file fails; the item ends failed listing the count | assumption |
+| Unreadable remote file inside a folder | That file fails, the rest is copied; the item ends failed listing the count | assumption |
+| Retry of a half-done folder | Same target folder (no `Photos 2/`); files already there with equal size+mtime are skipped | gate |
+| Two same-named items at once | `a.txt` and `a 2.txt` (reservations + no-overwrite move) | gate |
+| Remote folder mtimes | Not preserved (SEND has no directory mtime; adbd creates parents); local folder mtimes are | AOSP |
 | Symlink in a folder being downloaded | Skipped (not followed) | assumption |
 | Empty folder | Created on the other side | assumption |
-| App quits during a transfer | Partial `*.adbfiles-part` deleted on next download of the same name; no resume | out of scope |
+| App quits during a transfer | No resume; a stale `name.adbfiles-part` is deleted before the next download of that name | assumption |
 | Upload of a file > 4 GB | Allowed (SEND streams; no 32-bit size field) | AOSP |
 | Device switched in the sidebar | Transfers keep running (they are per device, not per window) | assumption |
 
