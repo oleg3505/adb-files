@@ -18,6 +18,8 @@ struct FakeDevice: Sendable {
     var closeAfterRequests = Int.max
     /// Never answer sync requests (simulates a hung device).
     var silent = false
+    /// Pause before each chunk of a LIST/LIS2 reply after the first (with `chunkSize`).
+    var listChunkDelay: Duration?
 
     /// Records every request: "features", "shell:<cmd>", "sync-connection", "LIS2 <path>", …
     let log = OSAllocatedUnfairLock(initialState: [String]())
@@ -138,6 +140,7 @@ struct FakeDevice: Sendable {
                 reply += Data("DONE".utf8) + Data(count: v2 ? 72 : 16)
                 var index = reply.startIndex
                 while index < reply.endIndex {
+                    if let listChunkDelay, index > reply.startIndex { try await Task.sleep(for: listChunkDelay) }
                     let end = reply.index(index, offsetBy: min(chunkSize, reply.endIndex - index))
                     try await client.write(Data(reply[index..<end]))
                     index = end
@@ -295,6 +298,28 @@ struct AdbSyncClientTests {
         let started = clock.now
         await #expect(throws: AdbError.timeout) { try await client.list("/x") }
         #expect(clock.now - started < .seconds(2))
+    }
+
+    @Test func slowButSteadyListingIsNotATimeout() async throws {
+        // 20 chunks 60 ms apart ≈ 1.2 s in total, far over the 300 ms limit, but never 300 ms without data.
+        let names = (0..<20).map { "file\($0).jpg" }
+        var device = FakeDevice(listings: ["/big": names], chunkSize: 88)
+        device.listChunkDelay = .milliseconds(60)
+        let (client, server) = try await makeClient(device, listTimeout: .milliseconds(300))
+        defer { server.stop() }
+        let clock = ContinuousClock()
+        let started = clock.now
+        let entries = try await client.list("/big")
+        #expect(entries.count == 20)
+        #expect(clock.now - started > .milliseconds(300), "the listing really took longer than the limit")
+    }
+
+    @Test func listingThatStallsMidwayTimesOut() async throws {
+        var device = FakeDevice(listings: ["/big": (0..<20).map { "file\($0).jpg" }], chunkSize: 88)
+        device.listChunkDelay = .milliseconds(600)
+        let (client, server) = try await makeClient(device, listTimeout: .milliseconds(300))
+        defer { server.stop() }
+        await #expect(throws: AdbError.timeout) { try await client.list("/big") }
     }
 
     @Test func disconnectEndsListingPromptly() async throws {

@@ -6,6 +6,9 @@ import os
 /// Keeps one persistent `sync:` connection for listings, opened lazily and dropped on any error so the
 /// next call reconnects. Operations run one at a time on that connection. Cancelling the calling task, a
 /// timeout, or `disconnect()` closes the connection.
+///
+/// The listing timeout limits *inactivity* (time without any data from the device), not total time, so a big folder
+/// listed while transfers share the USB link still completes (ADR-002).
 public actor AdbSyncClient {
     /// Device serial number.
     public let serial: String
@@ -26,7 +29,8 @@ public actor AdbSyncClient {
     /// - Parameters:
     ///   - serial: The device to talk to.
     ///   - host: ADB server address and connect/request timeouts.
-    ///   - listTimeout: Upper bound for one listing, including the empty-folder checks.
+    ///   - listTimeout: Longest wait for the device while listing or stating: each write and each read must
+    ///     complete within it. There is no limit on the total time (ADR-002).
     public init(serial: String, host: AdbHostClient = AdbHostClient(), listTimeout: Duration = .seconds(10)) {
         self.serial = serial
         self.host = host
@@ -39,18 +43,12 @@ public actor AdbSyncClient {
     ///   connection errors, or `CancellationError`.
     public func list(_ directory: String) async throws -> [RemoteFile] {
         let path = RemotePath.normalized(directory)
-        let timeout = listTimeout
-        return try await serialized {
-            try await withTimeout(timeout) { try await self.performList(path) }
-        }
+        return try await serialized { try await self.performList(path) }
     }
 
     /// Stats a path without following a final symlink (with a trailing `/` the link is followed).
     public func lstat(_ path: String) async throws -> SyncStat {
-        let timeout = listTimeout
-        return try await serialized {
-            try await withTimeout(timeout) { try await self.performStat(path) }
-        }
+        return try await serialized { try await self.performStat(path) }
     }
 
     /// Waits for a free transfer slot (two per device) and returns a session that owns it.
@@ -114,7 +112,7 @@ public actor AdbSyncClient {
             let connection = try await syncConnection()
             let v2 = try await supports("ls_v2")
             let request = try SyncProtocol.encodeRequest(v2 ? .listV2 : .list, path: RemotePath.listingPath(directory))
-            try await connection.sendRaw(request, timeout: nil)
+            try await connection.sendRaw(request, timeout: listTimeout)
             var decoder = SyncListDecoder(v2: v2, directory: directory)
             reading: while true {
                 while let item = try decoder.next() {
@@ -123,7 +121,8 @@ public actor AdbSyncClient {
                     case .done: break reading
                     }
                 }
-                decoder.append(try await connection.readAvailable(timeout: nil))
+                // Inactivity limit: each chunk must arrive in time; a slow but steady listing is fine.
+                decoder.append(try await connection.readAvailable(timeout: listTimeout))
             }
             if entries.isEmpty { try await classifyEmptyListing(directory, on: connection) }
         } catch {
@@ -167,7 +166,7 @@ public actor AdbSyncClient {
         }
         guard info.isDirectory else { throw AdbError.notADirectory(directory) }
 
-        let output = try await AdbShell.run(AdbShell.accessCheck(directory), serial: serial, client: host)
+        let output = try await AdbShell.run(AdbShell.accessCheck(directory), serial: serial, client: host, timeout: listTimeout)
         switch output.trimmingCharacters(in: .whitespacesAndNewlines) {
         case "ok": return
         case "denied": throw AdbError.permissionDenied(directory)
@@ -177,8 +176,10 @@ public actor AdbSyncClient {
 
     private func stat(_ path: String, on connection: AdbConnection) async throws -> SyncStat {
         let v2 = try await supports("stat_v2")
-        try await connection.sendRaw(try SyncProtocol.encodeRequest(v2 ? .lstatV2 : .lstat, path: path), timeout: nil)
-        let reply = try await connection.readExactly(v2 ? SyncProtocol.statV2ReplySize : SyncProtocol.statV1ReplySize, timeout: nil)
+        try await connection.sendRaw(try SyncProtocol.encodeRequest(v2 ? .lstatV2 : .lstat, path: path), timeout: listTimeout)
+        let reply = try await connection.readExactly(
+            v2 ? SyncProtocol.statV2ReplySize : SyncProtocol.statV1ReplySize, timeout: listTimeout
+        )
         return try SyncProtocol.decodeStat(reply, v2: v2)
     }
 
