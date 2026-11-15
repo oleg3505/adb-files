@@ -450,6 +450,14 @@ struct FileTableView: NSViewRepresentable {
         func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
             draggedPaths = []
             parent?.actions.dragChanged([])
+            DragHint.shared.hide()
+        }
+
+        /// Refreshes the cursor hint from this table (called on every `validateDrop`); nil text hides it.
+        private func hint(_ kind: DragHintText.Kind?, folder: String?) {
+            guard let kind, let folder else { return } // no refresh → the hint times out
+            let text = DragHintText.make(kind, folder: folder)
+            DragHint.shared.show(from: "table") { text }
         }
 
         /// ⌥ during a drag narrows the source mask to copy (the cursor shows "+"); that, not the key state at drop
@@ -473,7 +481,8 @@ struct FileTableView: NSViewRepresentable {
             proposedDropOperation dropOperation: NSTableView.DropOperation
         ) -> NSDragOperation {
             if info.draggingSource as? NSTableView === tableView {
-                guard internalDropTarget(row: row, operation: dropOperation) != nil else { return [] }
+                guard let target = internalDropTarget(row: row, operation: dropOperation) else { return [] }
+                hint(Self.isCopy(info) ? .copy : .move, folder: target.id)
                 return Self.isCopy(info) ? .copy : .move
             }
             guard info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) else {
@@ -485,9 +494,11 @@ struct FileTableView: NSViewRepresentable {
                 Logger.transfer.info("drop validate row=\(row) onFolder=\(dropOperation == .on)")
             }
             if dropOperation == .on, rows.indices.contains(row), rows[row].file.isDirectory {
+                hint(.upload, folder: rows[row].id)
                 return .copy // into that folder
             }
             tableView.setDropRow(-1, dropOperation: .on) // the whole table = current folder
+            hint(.upload, folder: parent?.folderPath)
             return .copy
         }
 
@@ -495,6 +506,7 @@ struct FileTableView: NSViewRepresentable {
             _ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation
         ) -> Bool {
             hasLoggedValidate = false
+            DragHint.shared.hide()
             if info.draggingSource as? NSTableView === tableView {
                 guard let target = internalDropTarget(row: row, operation: dropOperation) else { return false }
                 let copy = Self.isCopy(info)

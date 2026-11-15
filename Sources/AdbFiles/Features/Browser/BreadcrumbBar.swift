@@ -62,7 +62,10 @@ struct BreadcrumbBar: View {
                         .accessibilityLabel(index == 0 ? "Device root" : segment.title)
                         .onDrop(of: Self.dropTypes, isTargeted: Binding(
                             get: { targeted == segment.path },
-                            set: { targeted = $0 && acceptsDrop(on: segment.path) ? segment.path : (targeted == segment.path ? nil : targeted) }
+                            set: { isOver in
+                                targeted = isOver && acceptsDrop(on: segment.path) ? segment.path : (targeted == segment.path ? nil : targeted)
+                                updateHint(for: segment.path, isOver: isOver && targeted == segment.path)
+                            }
                         )) { providers in
                             drop(providers, on: segment.path)
                         }
@@ -86,8 +89,23 @@ struct BreadcrumbBar: View {
         }
     }
 
+    /// The cursor hint while a drag is over a segment; ⌥ is read live, like the drop itself does.
+    private func updateHint(for folder: String, isOver: Bool) {
+        let source = "crumb:" + folder
+        guard isOver else {
+            DragHint.shared.hide(from: source)
+            return
+        }
+        let rows = draggingPaths
+        DragHint.shared.show(from: source, sticky: true) {
+            guard !rows.isEmpty else { return DragHintText.make(.upload, folder: folder) }
+            return DragHintText.make(NSEvent.modifierFlags.contains(.option) ? .copy : .move, folder: folder)
+        }
+    }
+
     private func drop(_ providers: [NSItemProvider], on folder: String) -> Bool {
         targeted = nil
+        DragHint.shared.hide()
         if !draggingPaths.isEmpty {
             guard acceptsDrop(on: folder) else { return false }
             // SwiftUI's onDrop doesn't expose the negotiated operation; the ⌥ state at drop time is the best signal here.
