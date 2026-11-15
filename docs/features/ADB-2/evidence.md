@@ -10,9 +10,9 @@ All app lines come from `/usr/bin/log stream|show --info --predicate 'subsystem 
 - live server: `ADB_TEST_SERVER=1 swift test --filter LiveServer` → 2 passed (`version()`, `devices()` == first `trackDevices()` update)
 - AC8: `grep -rnE '^import (SwiftUI|AppKit)' Sources/AdbKit` → empty
 - protocol facts: `nc` probes of adb 1.0.41 (`OKAY00040029`, `FAIL001cunknown host service 'bogus'`, `OKAY0000`) and
-  the live `host:devices-l` capture `OKAY005f9A251FFAZ0073G         device usb:1-1 product:flame model:Pixel_4 device:flame transport_id:63\n`
+  the live `host:devices-l` capture `OKAY005fPIXEL4SERIAL01         device usb:1-1 product:flame model:Pixel_4 device:flame transport_id:63\n`
   (used verbatim as a test fixture); AOSP `transport.cpp`/`adb.cpp` for padding, field order and state words
-- executed (a) AC1, server running, Pixel 4 attached, bare executable: `firstList ms=126`, `devices count=1 [9A251FFAZ0073G:device]`,
+- executed (a) AC1, server running, Pixel 4 attached, bare executable: `firstList ms=126`, `devices count=1 [PIXEL4SERIAL01:device]`,
   `phase=ready`, no `start-server` line. Bundle launches after the App-init change: `firstList ms=` 487, 319, 467, 339, 334
 - executed (b)/(f) AC4, emulator `Pixel_4_API_33` boot then `adb -s emulator-5554 emu kill`, app log vs a 0.25 s `adb devices` poll:
   offline 14:29:08.265 (poll .261), device 14:29:16.043 (poll .064), removed 14:29:19.845 (poll .878); the app also

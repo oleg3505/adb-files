@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AdbFiles</title>
+<meta name="description" content="A native macOS file browser for Android devices over ADB — fast, keyboard-friendly, works like Finder.">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #fbfbfd; --surface: #ffffff; --text: #1d1d1f; --muted: #6e6e73; --line: #e5e5ea;
+    --accent: #1f9d55; --accent-strong: #157a41; --code-bg: #f2f2f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111113; --surface: #1c1c1f; --text: #f5f5f7; --muted: #a1a1a6; --line: #2c2c30;
+      --accent: #34c26f; --accent-strong: #5fd68e; --code-bg: #26262a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111113; --surface: #1c1c1f; --text: #f5f5f7; --muted: #a1a1a6; --line: #2c2c30;
+    --accent: #34c26f; --accent-strong: #5fd68e; --code-bg: #26262a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  main { max-width: 960px; margin: 0 auto; padding: 0 16px 64px; }
+  header.hero { text-align: center; padding: 72px 0 48px; }
+  header.hero img { width: 128px; height: 128px; }
+  h1 { font-size: clamp(2.4rem, 6vw, 3.4rem); letter-spacing: -0.02em; margin: 12px 0 8px; }
+  .tagline { font-size: 1.25rem; color: var(--muted); max-width: 620px; margin: 0 auto 28px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 12px;
+    font-weight: 600; text-decoration: none; border: 1px solid var(--line); color: var(--text); background: var(--surface);
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+  .meta { color: var(--muted); font-size: 0.9rem; margin-top: 14px; }
+  section { margin-top: 56px; }
+  h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  ol, ul { padding-left: 1.3em; }
+  li { margin: 6px 0; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88em; }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 6px; }
+  pre { background: var(--code-bg); padding: 14px 16px; border-radius: 12px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  .note { border-left: 3px solid var(--accent); padding: 4px 0 4px 14px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  td { padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { white-space: nowrap; font-weight: 600; width: 1%; padding-right: 18px; }
+  footer { text-align: center; color: var(--muted); font-size: 0.9rem; margin-top: 72px; }
+</style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <img src="icon.png" alt="AdbFiles app icon">
+    <h1>AdbFiles</h1>
+    <p class="tagline">A native macOS file browser for your Android phone. Fast, keyboard-friendly, and works like Finder.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/oleg3505/adb-files/releases/latest/download/AdbFiles.dmg">⬇ Download for Mac</a>
+      <a class="btn" href="https://github.com/oleg3505/adb-files">View on GitHub</a>
+    </div>
+    <p class="meta">Free and open source · macOS 14 Sonoma or later · Apple silicon</p>
+  </header>
+
+  <section>
+    <h2>Features</h2>
+    <div class="grid">
+      <div class="card"><h3>Instant browsing</h3><p>Talks to the ADB server directly instead of starting an <code>adb</code> process for every action. Folders open from cache, refresh in the background, and are prefetched when you hover over them.</p></div>
+      <div class="card"><h3>Handles huge folders</h3><p>A native table view stays smooth with 10,000+ photos in DCIM. Sort by name, date, size or kind, with folders first.</p></div>
+      <div class="card"><h3>Drag &amp; drop</h3><p>Drag files out to Finder (the download starts on drop) or drop files in to upload. Moving between folders works too.</p></div>
+      <div class="card"><h3>Quick Look &amp; thumbnails</h3><p>Press Space to preview photos, videos and documents. Thumbnails load lazily and are cached on disk.</p></div>
+      <div class="card"><h3>Transfers queue</h3><p>Shows progress, speed and ETA, with cancel and retry. Handles files over 4 GB. Asks before replacing a file with the same name.</p></div>
+      <div class="card"><h3>File operations</h3><p>Rename, delete, new folder, move, copy and copy path. Cyrillic and emoji names are fully supported.</p></div>
+      <div class="card"><h3>Feels native</h3><p>Standard shortcuts, context menus, breadcrumbs, Back/Forward, type-to-select, dark mode, and sidebar bookmarks for common locations.</p></div>
+      <div class="card"><h3>Reliable</h3><p>Copes with a cable unplugged mid-transfer, unauthorized devices, timeouts and several phones at once.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Install</h2>
+    <ol>
+      <li>Install the Android platform tools: <code>brew install android-platform-tools</code></li>
+      <li>On your phone, turn on <b>Developer options → USB debugging</b> and connect it with a cable.</li>
+      <li>Download <a href="https://github.com/oleg3505/adb-files/releases/latest/download/AdbFiles.dmg">AdbFiles.dmg</a>, open it, and drag <b>AdbFiles</b> to <b>Applications</b>.</li>
+      <li>Open the app and confirm the USB debugging prompt on your phone.</li>
+    </ol>
+    <p class="note">The app is not notarized by Apple, so on first launch macOS will say it “cannot verify the developer”. Right-click AdbFiles in Applications and choose <b>Open</b>. On macOS 15 or later, open it once, then go to <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>. You can also run:</p>
+    <pre><code>xattr -dr com.apple.quarantine /Applications/AdbFiles.app</code></pre>
+  </section>
+
+  <section>
+    <h2>Keyboard shortcuts</h2>
+    <table>
+      <tr><td>⌘[ ⌘] ⌘↑</td><td>Back, Forward, Enclosing folder</td></tr>
+      <tr><td>Return, ⌘↓</td><td>Open</td></tr>
+      <tr><td>Space, ⌘Y</td><td>Quick Look</td></tr>
+      <tr><td>⌘R, ⇧⌘.</td><td>Refresh, Show hidden files</td></tr>
+      <tr><td>⇧⌘N</td><td>New folder</td></tr>
+      <tr><td>⌘⌫</td><td>Delete (with confirmation; Android has no Trash)</td></tr>
+      <tr><td>⇧⌘D, ⌘U</td><td>Download to…, Upload…</td></tr>
+      <tr><td>⌥⌘C</td><td>Copy path</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Build from source</h2>
+    <p>AdbFiles is a Swift package with no third-party dependencies. You need Xcode 16 or later.</p>
+    <pre><code>git clone https://github.com/oleg3505/adb-files.git
+cd adb-files
+swift test              # unit tests
+scripts/run.sh          # build and launch a debug app
+scripts/make-dmg.sh     # release build → build/AdbFiles.dmg</code></pre>
+  </section>
+
+  <footer>Built with Swift, SwiftUI and AppKit · <a href="https://github.com/oleg3505/adb-files">github.com/oleg3505/adb-files</a></footer>
+</main>
+</body>
+</html>

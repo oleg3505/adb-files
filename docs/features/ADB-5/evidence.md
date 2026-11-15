@@ -8,7 +8,7 @@ folder was removed afterwards (`ls -d …` → gone). No command targeted a path
 ### Verification
 - build: `swift package clean && swift build --build-tests` → 0 warnings (after R1, R2, R3)
 - tests: `swift test` → 206 passed; full suite 20× → 0 failures (after the fixes below)
-- live: `ADB_TEST_SERIAL=9A251FFAZ0073G ADB_TEST_WRITE=1 swift test --filter LiveFileOps` → pass: mkdir `-rf` and
+- live: `ADB_TEST_SERIAL=PIXEL4SERIAL01 ADB_TEST_WRITE=1 swift test --filter LiveFileOps` → pass: mkdir `-rf` and
   `Папка 📁`; rename `it's a.txt` → `Звіт 🎉.txt`; **case-only rename `Звіт 🎉.txt` → `ЗВІТ 🎉.txt` on case-insensitive
   FUSE**; `папка 📁` refused (clash); copy keeps mtime; move removes source; move into a folder with the same name
   refused, nothing overwritten; recursive delete

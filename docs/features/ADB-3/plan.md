@@ -55,7 +55,7 @@ the user's answer, so no ADR.
   reconnect after server closes, timeout, `disconnect()` during a listing ends it promptly. `Tests/AdbKitTests/LiveDeviceTests.swift` — `/sdcard/` and
   `/data/` against a real device, skipped unless `ADB_TEST_SERIAL` is set; expects `/sdcard/` non-empty, `/data/` →
   `.permissionDenied`, `/sdcard/Android/media/com.google.android.gms/` → empty list (no error), a missing path → `.notFound`
-- executed how: `ADB_TEST_SERIAL=9A251FFAZ0073G swift test --filter LiveDevice` → pass, with timing of
+- executed how: `ADB_TEST_SERIAL=PIXEL4SERIAL01 swift test --filter LiveDevice` → pass, with timing of
   `/sdcard/DCIM/Camera/` logged
 
 ### R4 — Browser logic: `BrowserStore`, `ListingCache`, sorting (M)

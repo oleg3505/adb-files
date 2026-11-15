@@ -7,7 +7,7 @@ Device: Pixel 4 (Android 13) over USB. No files were created on the phone (user'
 ### Verification
 - build: `swift package clean && swift build --build-tests` → exit 0, `grep -c 'warning:'` → 0 (after R1, R3, R4, R5)
 - tests: `swift test` → "Test run with 119 tests in 16 suites passed"; network and store suites repeated 5× → 5/5
-- live: `ADB_TEST_SERVER=1 ADB_TEST_SERIAL=9A251FFAZ0073G swift test --filter Live` → pass, incl. `/data` and
+- live: `ADB_TEST_SERVER=1 ADB_TEST_SERIAL=PIXEL4SERIAL01 swift test --filter Live` → pass, incl. `/data` and
   `/storage/emulated` → `.permissionDenied`, empty `/sdcard/Android/media/com.google.android.gms` → `[]`,
   missing path → `.notFound`, `DCIM/Camera` 7,948 entries < 5 s
 - AdbKit: `grep -rnE '^import (SwiftUI|AppKit)' Sources/AdbKit` → empty

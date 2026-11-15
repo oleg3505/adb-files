@@ -52,8 +52,8 @@ final class FakeWifi: WifiConnecting {
 
     @Test func networkSerialsCanBeDisconnected() {
         #expect(WifiConnectModel.isNetworkSerial("192.168.1.20:41234"))
-        #expect(WifiConnectModel.isNetworkSerial("adb-9A251FFAZ0073G-abc._adb-tls-connect._tcp"))
-        #expect(!WifiConnectModel.isNetworkSerial("9A251FFAZ0073G"))
+        #expect(WifiConnectModel.isNetworkSerial("adb-PIXEL4SERIAL01-abc._adb-tls-connect._tcp"))
+        #expect(!WifiConnectModel.isNetworkSerial("PIXEL4SERIAL01"))
         #expect(!WifiConnectModel.isNetworkSerial("emulator-5554"))
     }
 
