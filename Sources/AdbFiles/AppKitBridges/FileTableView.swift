@@ -107,7 +107,12 @@ struct FileTableView: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         context.coordinator.table = table
+        context.coordinator.startWatchingMouseDown()
         return scroll
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.stopWatchingMouseDown()
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -360,8 +365,47 @@ struct FileTableView: NSViewRepresentable {
         // MARK: Drag & drop
 
         func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-            guard rows.indices.contains(row), !rows[row].file.isSymlink else { return nil }
+            // Like Finder: rows drag only when grabbed by the icon or name; elsewhere the mouse selects a range.
+            guard dragAllowed, rows.indices.contains(row), !rows[row].file.isSymlink else { return nil }
             return parent?.promise(rows[row])
+        }
+
+        // MARK: Drag zone (where a mouse-down may start a file drag)
+
+        /// Whether the last mouse-down in the table landed on a row's icon or name text.
+        private var dragAllowed = true
+        private var mouseDownMonitor: Any?
+
+        /// Watches mouse-downs in the table's window (an event monitor, so the table subclass needs no override).
+        func startWatchingMouseDown() {
+            guard mouseDownMonitor == nil else { return }
+            mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                MainActor.assumeIsolated { self?.noteMouseDown(event) }
+                return event
+            }
+        }
+
+        func stopWatchingMouseDown() {
+            if let mouseDownMonitor { NSEvent.removeMonitor(mouseDownMonitor) }
+            mouseDownMonitor = nil
+        }
+
+        private func noteMouseDown(_ event: NSEvent) {
+            guard let table, event.window === table.window else { return }
+            let point = table.convert(event.locationInWindow, from: nil)
+            guard table.bounds.contains(point) else { return }
+            let row = table.row(at: point)
+            let nameColumn = table.column(withIdentifier: NSUserInterfaceItemIdentifier(SortKey.name.rawValue))
+            guard row >= 0, nameColumn >= 0,
+                  let cell = table.view(atColumn: nameColumn, row: row, makeIfNecessary: false) as? NSTableCellView else {
+                dragAllowed = false
+                return
+            }
+            let local = cell.convert(point, from: table)
+            let textWidth = cell.textField.map { $0.attributedStringValue.size().width } ?? 0
+            dragAllowed = DragZone.allowsDrag(
+                at: local, iconFrame: cell.imageView?.frame ?? .zero, textFrame: cell.textField?.frame ?? .zero, textWidth: textWidth
+            )
         }
 
         func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
@@ -487,6 +531,19 @@ struct FileTableView: NSViewRepresentable {
             NSLayoutConstraint.activate(constraints)
             return cell
         }
+    }
+}
+
+/// Where a mouse-down on a row may start a file drag: the icon or the drawn name text (Finder's list view).
+enum DragZone {
+    /// Slack around the icon and text, in points.
+    static let slack: CGFloat = 2
+
+    static func allowsDrag(at point: CGPoint, iconFrame: CGRect, textFrame: CGRect, textWidth: CGFloat) -> Bool {
+        if iconFrame.insetBy(dx: -slack, dy: -slack).contains(point) { return true }
+        var text = textFrame
+        text.size.width = min(textFrame.width, textWidth + 4)
+        return text.insetBy(dx: -slack, dy: -slack).contains(point)
     }
 }
 
