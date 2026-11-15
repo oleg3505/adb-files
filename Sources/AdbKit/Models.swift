@@ -61,7 +61,7 @@ public enum DeviceState: Sendable, Hashable {
 
 /// A device known to the ADB server, parsed from one `host:devices-l` line.
 public struct Device: Sendable, Hashable, Identifiable {
-    /// Serial number, e.g. `9A251FFAZ0073G`, `emulator-5554` or `192.168.1.5:5555`.
+    /// Serial number, e.g. `PIXEL4SERIAL01`, `emulator-5554` or `192.168.1.5:5555`.
     public let serial: String
     /// Current connection state.
     public let state: DeviceState

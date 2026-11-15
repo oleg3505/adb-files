@@ -82,7 +82,7 @@ doc comments, Swift Testing suites) and `Sources/AdbFiles/Features/<Feature>/` f
   (AC5); (d) quit app, `adb kill-server`, launch → exactly one `start-server` line (AC2, R3 live);
   (e) `adb kill-server` + `ADBFILES_ADB_PATH=/nonexistent .build/debug/AdbFiles` → `phase=adbMissing`
   (AC3, R3 live); (f) `adb -s emulator-5554 emu kill` → update line without the emulator, < 1 s (AC4);
-  (g) **user-assisted, physical Pixel 4 (9A251FFAZ0073G)**: user revokes USB debugging authorizations in
+  (g) **user-assisted, physical Pixel 4 (PIXEL4SERIAL01)**: user revokes USB debugging authorizations in
   Developer options and replugs → update shows `unauthorized`; user clicks the row → `select … refused
   state=unauthorized`; detail shows "Confirm USB debugging on your phone"; user accepts the prompt on
   the phone → update shows `device`; clicking → `select … accepted` (AC6)

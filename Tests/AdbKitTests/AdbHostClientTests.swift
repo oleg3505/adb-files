@@ -17,11 +17,11 @@ struct AdbHostClientTests {
         let server = try await FakeAdbServer.start { client in
             #expect(try await client.readRequest() == "host:devices-l")
             try await client.write("OKAY")
-            try await client.writeFramed("9A251FFAZ0073G         device usb:1-1 product:flame model:Pixel_4 device:flame transport_id:63\n")
+            try await client.writeFramed("PIXEL4SERIAL01         device usb:1-1 product:flame model:Pixel_4 device:flame transport_id:63\n")
         }
         defer { server.stop() }
         let devices = try await server.client().devices()
-        #expect(devices.map(\.serial) == ["9A251FFAZ0073G"])
+        #expect(devices.map(\.serial) == ["PIXEL4SERIAL01"])
     }
 
     @Test func responseSplitIntoTinyWrites() async throws {
@@ -43,7 +43,7 @@ struct AdbHostClientTests {
             #expect(try await client.readRequest() == "host:pair:123456:192.168.1.20:37099")
             try await client.write("OKAY")
             try await client.write("OKAY")
-            try await client.writeFramed("Successfully paired to 192.168.1.20:37099 [guid=adb-9A251FFAZ0073G-abc]")
+            try await client.writeFramed("Successfully paired to 192.168.1.20:37099 [guid=adb-PIXEL4SERIAL01-abc]")
         }
         defer { server.stop() }
         let message = try await server.client().pair(address: "192.168.1.20:37099", code: "123456")

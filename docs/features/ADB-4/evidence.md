@@ -8,7 +8,7 @@ All writes went to `/sdcard/Download/AdbFilesTest` (user-approved) and the folde
 ### Verification
 - build: `swift package clean && swift build --build-tests` → 0 warnings (after R1–R4 and the fixes)
 - tests: `swift test` → 172 passed; full suite 40× after the ENODATA fix → 0 failures (3/40 before it)
-- live: `ADB_TEST_SERIAL=9A251FFAZ0073G ADB_TEST_WRITE=1 swift test --filter "Live"` → pass:
+- live: `ADB_TEST_SERIAL=PIXEL4SERIAL01 ADB_TEST_WRITE=1 swift test --filter "Live"` → pass:
   - `downloadsSystemFontByteIdentical`: 26 MB `/system/fonts/NotoSerifCJK-Regular.ttc`, SHA-1 = device `sha1sum`,
     **34 MB/s in a debug build** (`adb pull`: 34.2 MB/s)
   - `uploadAndDownloadRoundTrip` (Cyrillic + emoji name, mtime 1_700_000_000 kept), `cancelledUploadLeavesNoPartialFile`

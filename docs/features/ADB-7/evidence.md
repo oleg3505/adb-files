@@ -13,7 +13,7 @@ How results were collected:
 ### Verification
 - **Build:** clean `swift build --build-tests` → 0 warnings after every requirement.
 - **Tests:** 300 passed (was 252); the full suite ran 20× with 0 failures.
-- **Live suites:** `ADB_TEST_SERVER=1 ADB_TEST_SERIAL=9A251FFAZ0073G ADB_TEST_WRITE=1 swift test --filter Live` →
+- **Live suites:** `ADB_TEST_SERVER=1 ADB_TEST_SERIAL=PIXEL4SERIAL01 ADB_TEST_WRITE=1 swift test --filter Live` →
   22 passed, 0 skipped. This includes the write round trips, hostile names, a cancelled upload, a file over 4 GB
   plus a folder, and the new `connectAndDisconnectReportAdbsMessages`.
 - **`AdbKit` imports:** `grep -rnE "^import (SwiftUI|AppKit|Quartz)" Sources/AdbKit` → 0.

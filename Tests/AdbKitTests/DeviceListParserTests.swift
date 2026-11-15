@@ -6,7 +6,7 @@ import Testing
 struct DeviceListParserTests {
     /// Exact bytes captured from adb 1.0.41 (`host:devices-l`) with a Pixel 4 attached over USB.
     static let livePixel4Response = Data(
-        "OKAY005f9A251FFAZ0073G         device usb:1-1 product:flame model:Pixel_4 device:flame transport_id:63\n".utf8
+        "OKAY005fPIXEL4SERIAL01         device usb:1-1 product:flame model:Pixel_4 device:flame transport_id:63\n".utf8
     )
 
     @Test func parsesLiveCaptureEndToEnd() throws {
@@ -18,7 +18,7 @@ struct DeviceListParserTests {
 
         #expect(devices == [
             Device(
-                serial: "9A251FFAZ0073G", state: .device, devpath: "usb:1-1", product: "flame",
+                serial: "PIXEL4SERIAL01", state: .device, devpath: "usb:1-1", product: "flame",
                 model: "Pixel_4", deviceName: "flame", transportID: 63
             ),
         ])
@@ -37,10 +37,10 @@ struct DeviceListParserTests {
     }
 
     @Test func parsesUnauthorizedWithoutModel() {
-        let device = DeviceListParser.parseLine("9A251FFAZ0073G         unauthorized usb:1-1 transport_id:64")
+        let device = DeviceListParser.parseLine("PIXEL4SERIAL01         unauthorized usb:1-1 transport_id:64")
         #expect(device?.state == .unauthorized)
         #expect(device?.model == nil)
-        #expect(device?.displayName == "9A251FFAZ0073G")
+        #expect(device?.displayName == "PIXEL4SERIAL01")
         #expect(device?.state.isUsable == false)
     }
 
@@ -50,9 +50,9 @@ struct DeviceListParserTests {
     }
 
     @Test func parsesSerialLongerThanPadding() {
-        let line = "adb-9A251FFAZ0073G-abcdef._adb-tls-connect._tcp device product:flame model:Pixel_4 device:flame transport_id:7"
+        let line = "adb-PIXEL4SERIAL01-abcdef._adb-tls-connect._tcp device product:flame model:Pixel_4 device:flame transport_id:7"
         let device = DeviceListParser.parseLine(Substring(line))
-        #expect(device?.serial == "adb-9A251FFAZ0073G-abcdef._adb-tls-connect._tcp")
+        #expect(device?.serial == "adb-PIXEL4SERIAL01-abcdef._adb-tls-connect._tcp")
         #expect(device?.state == .device)
         #expect(device?.model == "Pixel_4")
     }
@@ -70,7 +70,7 @@ struct DeviceListParserTests {
     }
 
     @Test func parsesNoPermissionsStateWithSpaces() {
-        let line = "9A251FFAZ0073G         no permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html] usb:1-1 transport_id:4"
+        let line = "PIXEL4SERIAL01         no permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html] usb:1-1 transport_id:4"
         let device = DeviceListParser.parseLine(Substring(line))
         guard case .noPermissions(let text)? = device?.state else {
             Issue.record("expected .noPermissions, got \(String(describing: device?.state))")
@@ -88,8 +88,8 @@ struct DeviceListParserTests {
     }
 
     @Test func parsesShortTabFormat() {
-        let devices = DeviceListParser.parse("9A251FFAZ0073G\tdevice\nemulator-5554\toffline\n")
-        #expect(devices.map(\.serial) == ["9A251FFAZ0073G", "emulator-5554"])
+        let devices = DeviceListParser.parse("PIXEL4SERIAL01\tdevice\nemulator-5554\toffline\n")
+        #expect(devices.map(\.serial) == ["PIXEL4SERIAL01", "emulator-5554"])
         #expect(devices.map(\.state) == [.device, .offline])
     }
 
@@ -104,7 +104,7 @@ struct DeviceListParserTests {
 
     @Test func parsesSeveralDevices() {
         let text = """
-        9A251FFAZ0073G         device usb:1-1 product:flame model:Pixel_4 device:flame transport_id:63
+        PIXEL4SERIAL01         device usb:1-1 product:flame model:Pixel_4 device:flame transport_id:63
         emulator-5554          offline transport_id:64
 
         """

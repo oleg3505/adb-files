@@ -8,7 +8,7 @@ folder was removed afterwards (`ls` → "No such file or directory").
 ### Verification
 - build: clean `swift build --build-tests` → 0 warnings, after every requirement.
 - tests: 247 passed (was 208). The full suite ran 20× → 0 failures.
-- live (read-only): `ADB_TEST_SERVER=1 ADB_TEST_SERIAL=9A251FFAZ0073G swift test --filter Live` → 21 passed. This
+- live (read-only): `ADB_TEST_SERVER=1 ADB_TEST_SERIAL=PIXEL4SERIAL01 swift test --filter Live` → 21 passed. This
   includes `cameraJpegThumbnailFromA64KBPrefix`: a 64 KB prefix of a camera JPEG yields its EXIF thumbnail. Write
   suites were skipped by design (writes were approved for AC5 only).
 - `AdbKit` imports: `grep -rnE "^import (SwiftUI|AppKit|Quartz)" Sources/AdbKit` → 0.
