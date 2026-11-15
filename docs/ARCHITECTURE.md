@@ -130,3 +130,5 @@ preview (`ui`).
 
 `scripts/build-app.sh` assembles `build/AdbFiles.app` from the SwiftPM binary, `Resources/Info.plist`
 and a generated placeholder icon (`scripts/make-icon.sh`), then ad-hoc signs it. `build/` is gitignored.
+`scripts/make-dmg.sh` packs that app into `build/AdbFiles.dmg` for GitHub Releases. `site/` is the static GitHub
+Pages site, published by `.github/workflows/pages.yml`. See [RELEASING.md](RELEASING.md).

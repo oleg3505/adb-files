@@ -46,6 +46,7 @@
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px; }
   .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  section > h3 { font-size: 1.1rem; margin: 22px 0 6px; }
   .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
   ol, ul { padding-left: 1.3em; }
   li { margin: 6px 0; }
@@ -95,8 +96,25 @@
       <li>Download <a href="https://github.com/oleg3505/adb-files/releases/latest/download/AdbFiles.dmg">AdbFiles.dmg</a>, open it, and drag <b>AdbFiles</b> to <b>Applications</b>.</li>
       <li>Open the app and confirm the USB debugging prompt on your phone.</li>
     </ol>
-    <p class="note">The app is not notarized by Apple, so on first launch macOS will say it “cannot verify the developer”. Right-click AdbFiles in Applications and choose <b>Open</b>. On macOS 15 or later, open it once, then go to <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>. You can also run:</p>
+    <p class="note">On first launch macOS shows a warning. That is expected — see <a href="#gatekeeper">Opening the app the first time</a>.</p>
+  </section>
+
+  <section id="gatekeeper">
+    <h2>Opening the app the first time</h2>
+    <p>When you first open AdbFiles, macOS shows <b>“AdbFiles” Not Opened — Apple could not verify “AdbFiles” is free of malware…</b> with the buttons <b>Done</b> and <b>Move to Bin</b>.</p>
+    <p><b>Why:</b> apps downloaded from the internet must be signed with a paid Apple Developer ID and notarized (checked by Apple) to open without a warning. AdbFiles is a free hobby project. It is signed locally (“ad-hoc”) but not notarized. The download itself is fine: the source code is public, and you can <a href="#build">build it yourself</a>.</p>
+    <h3>macOS 15 Sequoia and later</h3>
+    <ol>
+      <li>Click <b>Done</b> (not <b>Move to Bin</b>).</li>
+      <li>Open <b>System Settings → Privacy &amp; Security</b>.</li>
+      <li>Scroll down to <b>Security</b>. Next to “AdbFiles was blocked to protect your Mac”, click <b>Open Anyway</b>.</li>
+      <li>Confirm with your password or Touch ID, then click <b>Open Anyway</b> once more.</li>
+    </ol>
+    <h3>macOS 14 Sonoma</h3>
+    <p>Right-click (or Control-click) AdbFiles in Applications, choose <b>Open</b>, then click <b>Open</b> in the dialog.</p>
+    <h3>Any version, from Terminal</h3>
     <pre><code>xattr -dr com.apple.quarantine /Applications/AdbFiles.app</code></pre>
+    <p>This removes the “downloaded from the internet” flag, so macOS no longer checks the app. You only need to do this once per downloaded version.</p>
   </section>
 
   <section>
@@ -113,7 +131,7 @@
     </table>
   </section>
 
-  <section>
+  <section id="build">
     <h2>Build from source</h2>
     <p>AdbFiles is a Swift package with no third-party dependencies. You need Xcode 16 or later.</p>
     <pre><code>git clone https://github.com/oleg3505/adb-files.git
