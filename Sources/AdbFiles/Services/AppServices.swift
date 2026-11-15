@@ -41,7 +41,10 @@ final class AppServices {
 
     init() {
         // Quick Look copies are only for this run.
-        Task.detached(priority: .utility) { PreviewCache.clearAll() }
+        Task.detached(priority: .utility) {
+            PreviewCache.clearAll()
+            ThumbnailCacheTrimmer.trim()
+        }
         let clients = SyncClientRegistry()
         self.clients = clients
         transfers = TransferQueue(engine: AdbTransferEngine { serial in await clients.client(for: serial) })
