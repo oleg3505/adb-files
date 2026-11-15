@@ -2,9 +2,20 @@
 
 Native macOS app for browsing and managing files on Android devices over ADB.
 **Download:** [AdbFiles.dmg](https://github.com/oleg3505/adb-files/releases/latest/download/AdbFiles.dmg) (Apple silicon, macOS 14+) ·
-[project page](https://oleg3505.github.io/adb-files/). The build is ad-hoc signed, not notarized, so macOS blocks the first
-launch ("Apple could not verify…"): click Done, then System Settings → Privacy & Security → Open Anyway (on macOS 14,
-right-click the app → Open also works). Or run `xattr -dr com.apple.quarantine /Applications/AdbFiles.app`.
+[project page](https://oleg3505.github.io/adb-files/)
+
+### Opening the app the first time
+
+macOS shows **"AdbFiles" Not Opened — Apple could not verify "AdbFiles" is free of malware…**. This is expected: the
+app is signed ad-hoc, not with a paid Apple Developer ID, and it is not notarized. The download is fine.
+
+- **macOS 15 and later:** click **Done** (not Move to Bin) → **System Settings → Privacy & Security** → scroll to
+  Security → **Open Anyway** next to "AdbFiles was blocked…" → confirm with your password or Touch ID.
+- **macOS 14:** right-click the app in Applications → **Open** → **Open**.
+- **Any version:** `xattr -dr com.apple.quarantine /Applications/AdbFiles.app` (removes the "downloaded" flag; needed
+  once per downloaded version).
+
+Release process and signing details: [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Requirements
 
@@ -71,6 +82,7 @@ App logs: `/usr/bin/log stream --level info --predicate 'subsystem == "dev.local
   `build/AdbFiles.dmg` to a new GitHub Release (`gh release create vX.Y.Z build/AdbFiles.dmg`). The download link
   always points at the latest release's `AdbFiles.dmg`.
 - `site/` is the GitHub Pages site; `.github/workflows/pages.yml` deploys it on every push to `main` that changes it.
+- Full checklist, Gatekeeper background and how to add notarization later: [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Layout
 
