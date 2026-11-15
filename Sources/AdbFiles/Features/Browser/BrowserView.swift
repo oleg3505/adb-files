@@ -148,7 +148,8 @@ struct BrowserView: View {
                 ContextMenu.items(clicked: clicked, selection: selection, store: store, startTransfers: start, preview: preview)
             },
             dragChanged: { store.draggingPaths = $0 },
-            quickLook: { preview?.toggle(store.selectedRows.map(\.file)) }
+            quickLook: { preview?.toggle(store.selectedRows.map(\.file)) },
+            prefetch: { store.prefetch($0) }
         )
     }
 

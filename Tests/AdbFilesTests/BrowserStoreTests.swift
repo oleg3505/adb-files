@@ -32,6 +32,8 @@ final class FakeListing: DirectoryListing {
         var waiting: [String: [CheckedContinuation<Void, Never>]] = [:]
         var disconnects = 0
         var cancelOnList: Set<String> = []
+        var cancellableGates: Set<String> = []
+        var cancelled: [String] = []
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -41,6 +43,10 @@ final class FakeListing: DirectoryListing {
     }
 
     func gate(_ path: String) { state.withLock { _ = $0.gated.insert(path) } }
+    /// Like `gate`, but cancelling the caller ends the wait with `CancellationError` (like a real connection).
+    func gateCancellable(_ path: String) { state.withLock { $0.gated.insert(path); $0.cancellableGates.insert(path) } }
+    /// Paths whose gated listing was cancelled.
+    var cancelledCalls: [String] { state.withLock { $0.cancelled } }
 
     /// The next `list(path)` throws `CancellationError` although the caller was not cancelled
     /// (what a connection closed by another window looks like).
@@ -63,8 +69,29 @@ final class FakeListing: DirectoryListing {
             return state.gated.contains(directory)
         }
         if gated {
-            await withCheckedContinuation { continuation in
-                state.withLock { $0.waiting[directory, default: []].append(continuation) }
+            let cancellable = state.withLock { $0.cancellableGates.contains(directory) }
+            if cancellable {
+                await withTaskCancellationHandler {
+                    await withCheckedContinuation { continuation in
+                        let alreadyCancelled = state.withLock { state -> Bool in
+                            if Task.isCancelled { return true }
+                            state.waiting[directory, default: []].append(continuation)
+                            return false
+                        }
+                        if alreadyCancelled { continuation.resume() }
+                    }
+                } onCancel: { [state] in
+                    let waiters = state.withLock { $0.waiting.removeValue(forKey: directory) ?? [] }
+                    waiters.forEach { $0.resume() }
+                }
+                if Task.isCancelled {
+                    state.withLock { $0.cancelled.append(directory) }
+                    throw CancellationError()
+                }
+            } else {
+                await withCheckedContinuation { continuation in
+                    state.withLock { $0.waiting[directory, default: []].append(continuation) }
+                }
             }
         }
         if state.withLock({ $0.cancelOnList.remove(directory) != nil }) { throw CancellationError() }

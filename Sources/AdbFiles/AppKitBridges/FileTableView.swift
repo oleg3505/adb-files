@@ -19,6 +19,8 @@ struct FileTableActions {
     var dragChanged: (_ paths: [String]) -> Void = { _ in }
     /// Space: toggle Quick Look for the selection.
     var quickLook: () -> Void = {}
+    /// The pointer rests on, or the single selection is, this folder (nil: none) — for prefetching.
+    var prefetch: (_ folderPath: String?) -> Void = { _ in }
 }
 
 /// A menu item that runs a closure.
@@ -108,6 +110,11 @@ struct FileTableView: NSViewRepresentable {
         scroll.autohidesScrollers = true
         context.coordinator.table = table
         context.coordinator.startWatchingMouseDown()
+        // Hover for prefetching: a tracking area owned by the coordinator (no table subclass override).
+        table.addTrackingArea(NSTrackingArea(
+            rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: context.coordinator, userInfo: nil
+        ))
         return scroll
     }
 
@@ -360,6 +367,32 @@ struct FileTableView: NSViewRepresentable {
             guard !isApplying, let table else { return }
             let paths = Set(table.selectedRowIndexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil })
             parent?.onSelect(paths)
+            if table.selectedRowIndexes.count == 1, let row = table.selectedRowIndexes.first {
+                prefetchIfFolder(row)
+            }
+        }
+
+        // MARK: Hover (prefetch)
+
+        @objc(mouseMoved:) func mouseMoved(with event: NSEvent) {
+            guard let table else { return }
+            prefetchIfFolder(table.row(at: table.convert(event.locationInWindow, from: nil)))
+        }
+
+        @objc(mouseExited:) func mouseExited(with event: NSEvent) {
+            hoveredPrefetch = nil
+            parent?.actions.prefetch(nil)
+        }
+
+        @objc(mouseEntered:) func mouseEntered(with event: NSEvent) {}
+
+        private var hoveredPrefetch: String?
+
+        private func prefetchIfFolder(_ row: Int) {
+            let folder = rows.indices.contains(row) && rows[row].file.isDirectory ? rows[row].id : nil
+            guard folder != hoveredPrefetch else { return }
+            hoveredPrefetch = folder
+            parent?.actions.prefetch(folder)
         }
 
         // MARK: Drag & drop

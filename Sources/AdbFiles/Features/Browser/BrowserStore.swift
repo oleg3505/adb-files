@@ -79,10 +79,13 @@ final class BrowserStore {
     /// so a slow refresh and a quick header click can't overwrite each other out of order.
     @ObservationIgnored private var arrangeEpoch = 0
     @ObservationIgnored private var started = false
+    @ObservationIgnored private let prefetcher: Prefetcher
 
+    /// - Parameter prefetchSleep: Waits out the prefetch delay; injectable so tests decide when it elapses.
     init(
         serial: String, listing: any DirectoryListing, cache: ListingCache, startPath: String = BrowserStore.startPath,
-        pipeline: RowPipeline = RowPipeline(), operations: (any FileOperating)? = nil
+        pipeline: RowPipeline = RowPipeline(), operations: (any FileOperating)? = nil,
+        prefetchSleep: Prefetcher.Sleep? = nil
     ) {
         self.serial = serial
         self.listing = listing
@@ -90,6 +93,16 @@ final class BrowserStore {
         self.operations = operations
         self.pipeline = pipeline
         self.path = RemotePath.normalized(startPath)
+        if let prefetchSleep {
+            prefetcher = Prefetcher(serial: serial, listing: listing, cache: cache, sleep: prefetchSleep)
+        } else {
+            prefetcher = Prefetcher(serial: serial, listing: listing, cache: cache)
+        }
+    }
+
+    /// The pointer rests on, or the selection is, the folder at `path` (nil: none): prefetch it after 150 ms.
+    func prefetch(_ path: String?) {
+        prefetcher.request(path.map(RemotePath.normalized))
     }
 
     // MARK: - Navigation
@@ -162,6 +175,7 @@ final class BrowserStore {
         loadTask?.cancel()
         loadTask = nil
         generation += 1
+        prefetcher.cancel()
     }
 
     // MARK: - File operations
@@ -377,6 +391,9 @@ final class BrowserStore {
     private func performLoad(_ target: String, action: String, token: Int, keepVisible: Bool = false) async {
         let clock = ContinuousClock()
         let began = clock.now
+        // Reuse a prefetch of this folder that is still running; any other prefetch is cancelled so it can't hold
+        // the listing connection.
+        let prefetched = prefetcher.take(target)
         let cached = await cache.cached(serial: serial, path: target)
         guard isCurrent(token) else { return }
 
@@ -386,6 +403,11 @@ final class BrowserStore {
             Logger.ui.info(
                 "navigate action=\(action, privacy: .public) path=\(target, privacy: .public) source=cache entries=\(cached.count) ms=\(Self.milliseconds(clock.now - began))"
             )
+            if !keepVisible, prefetcher.isFresh(target) {
+                // Listed by the prefetch moments ago: a second listing would only repeat it.
+                if isCurrent(token) { loadTask = nil }
+                return
+            }
         } else if !keepVisible {
             files = []
             builtRows = []
@@ -395,7 +417,14 @@ final class BrowserStore {
         }
 
         do {
-            let fresh = try await listing.list(target)
+            let fresh: [RemoteFile]
+            if let prefetched,
+               let files = await withTaskCancellationHandler(operation: { await prefetched.value }, onCancel: { prefetched.cancel() }) {
+                fresh = files
+                Logger.ui.info("prefetch reused path=\(target, privacy: .public)")
+            } else {
+                fresh = try await listing.list(target)
+            }
             guard isCurrent(token) else { return }
             let changed = await cache.store(fresh, serial: serial, path: target)
             guard isCurrent(token) else { return }
