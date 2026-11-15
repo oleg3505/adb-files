@@ -2,8 +2,9 @@
 
 Native macOS app for browsing and managing files on Android devices over ADB.
 **Download:** [AdbFiles.dmg](https://github.com/oleg3505/adb-files/releases/latest/download/AdbFiles.dmg) (Apple silicon, macOS 14+) ·
-[project page](https://oleg3505.github.io/adb-files/). The build is ad-hoc signed, not notarized: on first launch,
-right-click the app → Open (or `xattr -dr com.apple.quarantine /Applications/AdbFiles.app`).
+[project page](https://oleg3505.github.io/adb-files/). The build is ad-hoc signed, not notarized, so macOS blocks the first
+launch ("Apple could not verify…"): click Done, then System Settings → Privacy & Security → Open Anyway (on macOS 14,
+right-click the app → Open also works). Or run `xattr -dr com.apple.quarantine /Applications/AdbFiles.app`.
 
 ## Requirements
 
