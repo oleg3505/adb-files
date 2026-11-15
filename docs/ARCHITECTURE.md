@@ -22,14 +22,14 @@ Swift 6 language mode (strict concurrency) and macOS 14 minimum for all targets.
 | `AdbError.swift` | Typed errors with user-readable descriptions |
 | `HostProtocol.swift` | Request encoding (`%04x` + payload) and the incremental `HostMessageDecoder` |
 | `DeviceListParser.swift` | `host:devices-l` / `track-devices-l` lines (format from AOSP `transport.cpp`) |
-| `AdbConnection.swift` | `actor` over `NWConnection`: connect / request / read with timeouts; Task cancellation cancels the socket |
-| `AdbHostClient.swift` | `version()`, `devices()`, `trackDevices()` (`AsyncThrowingStream`) |
+| `AdbConnection.swift` | `actor` over `NWConnection`: connect / request / read with timeouts; `expectOkay` for two-status replies (`host:pair`); Task cancellation cancels the socket |
+| `AdbHostClient.swift` | `version()`, `devices()`, `trackDevices()` (`AsyncThrowingStream`); Wi-Fi: `pair(address:code:)` (`OKAY` then `OKAY`/`FAIL` + message), `connect(address:)` (adb answers `OKAY` even on failure — the message decides), `disconnect(address:)` |
 | `AdbServerLauncher.swift` | Finds `adb` (CLAUDE.md order, `ADBFILES_ADB_PATH` override) and runs `adb start-server` |
 | `RemoteFile.swift` | `RemoteFile` (64-bit size, mode, mtime, per-entry errno) and `RemotePath` helpers |
 | `SyncProtocol.swift` | Sync request encoding (≤ 1024-byte paths), incremental `SyncListDecoder` (`DENT`/`DNT2`/`DONE`/`FAIL`), stat replies |
-| `AdbSyncClient.swift` | `actor`, one persistent `sync:` connection per device; `list` (LIS2/LIST by feature), `lstat`, `disconnect`; operations serialized; signpost "list". Sessions: `openTransferSession()` (two per device) and `openInteractiveSession(priority:)` (one per device, for Quick Look and thumbnails; `.high` for previews) — ADR-001 |
+| `AdbSyncClient.swift` | `actor`, one persistent `sync:` connection per device; `list` (LIS2/LIST by feature), `lstat`, `disconnect`; operations serialized; the listing timeout limits inactivity (each read/write), not total time (ADR-002); signpost "list". Sessions: `openTransferSession()` (two per device) and `openInteractiveSession(priority:)` (one per device, for Quick Look and thumbnails; `.high` for previews) — ADR-001 |
 | `AdbShell.swift` | `quote(_:)` — the only shell-escaping helper; `accessCheck(_:)`; `run(_:serial:)` over `shell:` |
-| `AdbTransferSession.swift` | `actor`, one transfer slot = one `sync:` connection: `readPrefix(_:maxBytes:)` (RECV that stops after N bytes and drops the connection, so the next call reopens), `download` (via `*.adbfiles-part` + no-overwrite move), `upload` (mode + mtime), `walk`, `downloadFolder`/`uploadFolder` (skip finished files on Retry, per-file failures continue, post-order folder mtimes); 15 s inactivity limit per read/write, no overall limit; reopens after `FAIL` |
+| `AdbTransferSession.swift` | `actor`, one transfer slot = one `sync:` connection: `readPrefix(_:maxBytes:)` (RECV that stops after N bytes and drops the connection, so the next call reopens), `download` (via `*.adbfiles-part`, then a no-overwrite move — or a replace when the user chose Replace), `upload` (mode + mtime; with `replace:` it sends to a hidden `.<name>.adbfiles-part` and `mv -f`s it over the original, so a failed upload never truncates it), `walk`, `downloadFolder`/`uploadFolder` (skip finished files on Retry, per-file failures continue, post-order folder mtimes); 15 s inactivity limit per read/write, no overall limit; reopens after `FAIL` |
 | `AsyncLimiter.swift` | Cancellation-aware limiter, FIFO within a priority; `.high` waiters go before queued `.normal` ones |
 | `TransferIO.swift` | Temp names, no-overwrite move, mtimes, local folder walk |
 | `AdbFileOperations.swift` | `rename`, `move`/`copy` (N items → per-item results), `delete` (batched `rm -r`), `makeDirectory`; commands only via `AdbShell` with `--`; `AdbShell.runChecked` reads a last-line marker; source/target checked before and results verified after (toybox `-n` is silent); case-insensitive clash checks and a temp-name case-only rename, because `/sdcard` is case-insensitive FUSE |
@@ -72,6 +72,17 @@ permission bits allow, e.g. `/storage/emulated`).
   - `Transfers/TransfersButton`, `TransfersPopover`, `TransferRow`, `TransferStatusBar` — toolbar ring +
     badge, list with cancel/retry/show in Finder, bottom bar with combined progress.
   - `Transfers/TransferActions`, `App/TransferCommands` — File › Download To… (⇧⌘D), Upload… (⌘U).
+  - `Transfers/ConflictPlanner` — before uploads and Download To… are enqueued (`AppServices.startTransfers`): one
+    existence check per destination folder off the main actor, then a question per clash (`ConflictPrompt`, an
+    `NSAlert` sheet: Keep Both / Replace / Skip / Stop, "Apply to all" per kind); folders never offer Replace. The
+    queue still falls back to keep-both if the name is taken later or by another item.
+  - `Browser/Prefetcher` — a folder row under the pointer or selected for 150 ms is listed at low priority into
+    `ListingCache`; opening it reuses the in-flight prefetch (or skips a second listing within 10 s); any other
+    navigation cancels it first. Signpost "prefetch".
+  - `Devices/Bookmarks`, `DeviceSidebarView` — Locations (Internal Storage, DCIM, Download, Documents, Pictures,
+    Music) through the window's `@FocusedValue(\.browser)`, also in the Go menu.
+  - `Devices/WifiConnectModel`, `WifiConnectView` — File › Connect via Wi-Fi… window (pair with a code, connect);
+    Disconnect in the sidebar's context menu for network devices.
   - `Preview/PreviewController` — `@Observable @MainActor`, one per browser: Space toggles Quick Look for the
     selected files (folders and links skipped), downloads missing ones first (`loadingName` drives the spinner bar),
     follows selection changes while the panel is up. A token per request: a cancelled or superseded download never
@@ -83,13 +94,19 @@ permission bits allow, e.g. `/storage/emulated`).
   - `Browser/RowSize`, `App/ViewCommands` — View › Small Rows (22 pt, 16 pt icons) / Large Rows (48 pt, 40 pt),
     stored with `@AppStorage("rowSize")`.
 - `AppKitBridges/FilePromiseDelegate` — `NSFilePromiseProvider` delegate: enqueues the download on drop,
-  writes to Finder's exact URL, calls Finder's completion when the transfer ends.
+  writes to Finder's URL, calls Finder's completion when the transfer ends. Finder renames a clashing name
+  silently, so when the original name exists it asks (`ConflictPrompt`): Replace writes the original name, Keep
+  Both Finder's, Skip completes with `userCancelled`.
+- `AppKitBridges/DragHint` — "Move / Copy / Upload to “X”" next to the cursor, refreshed only by drop destinations
+  (table `validateDrop`, path-bar segments); a mouse-transparent panel that hides when not refreshed for 250 ms.
 - `AppKitBridges/FileTableView` — drag rows out (file promises) and accept Finder drops on the table or a
   folder row; empty folders keep the (empty) table so drops work everywhere.
 - `AppKitBridges/FileTableView` — `NSViewRepresentable` over a view-based `NSTableView`; reloads only
   when `rowsVersion` (or the row size) changes; Return opens, type-select by name, icons cached per extension.
   `FileNSTableView` overrides only `keyDown` (Return, Space) and the `QLPreviewPanelController` methods —
-  overriding its dragging-source methods broke drag & drop in ADB-5.
+  overriding its dragging-source methods broke drag & drop in ADB-5. Finder-like selection: a mouse-down monitor
+  records where the press landed and `pasteboardWriterForRow` returns nil outside the icon/name (`DragZone`), so
+  the table drag-selects instead. Hover for prefetch through a coordinator-owned `NSTrackingArea`.
 - `AppKitBridges/ThumbnailBinder` — `@MainActor`: the Name cell (`FileNameCellView`) requests its row's thumbnail
   in `viewFor`; reuse, `didRemove rowView` and folder changes cancel; a result is applied only if the cell still
   shows that path with the same token, in one batch per run-loop turn (`apply thumbs n=… mainMs=…`).
@@ -105,7 +122,9 @@ permission bits allow, e.g. `/storage/emulated`).
   (`Logger.ui` / `Logger.transfer`, subsystem `dev.local.AdbFiles`, same as `Logger.adb`).
 
 Filter logs with `log stream --level info --predicate 'subsystem == "dev.local.AdbFiles"'`
-(use `/usr/bin/log` in zsh, where `log` is a builtin).
+(use `/usr/bin/log` in zsh, where `log` is a builtin). `ThumbnailCacheTrimmer` keeps the thumbnail cache ≤ 500 MB
+(trimmed to 400 MB at launch, oldest first). Signpost intervals: list, transfer (`adb`), thumbnail, prefetch,
+preview (`ui`).
 
 ## Packaging
 

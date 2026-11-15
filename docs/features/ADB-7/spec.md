@@ -66,24 +66,24 @@
   - the File Provider extension (M8).
 
 ## Acceptance criteria
-- [ ] AC1 `DCIM/Camera` (7,948 entries) opens while two 1 GB uploads run. A device that sends nothing for 10 s still
+- [x] AC1 `DCIM/Camera` (7,948 entries) opens while two 1 GB uploads run. A device that sends nothing for 10 s still
       fails with the timeout message.
-- [ ] AC2 Dragging from the date/size/kind area or the empty part of a row selects a range. Dragging from the icon or
+- [x] AC2 Dragging from the date/size/kind area or the empty part of a row selects a range. Dragging from the icon or
       name still drags files. ⌘-click, ⇧-click and ⌘A select. Existing drag & drop regressions pass.
-- [ ] AC3 Uploading or downloading onto existing names asks first. Replace, Keep Both and Skip do exactly that.
+- [x] AC3 Uploading or downloading onto existing names asks first. Replace, Keep Both and Skip do exactly that.
       "Apply to all" asks once. Folders offer Keep Both / Skip only. Nothing is copied before the answer.
-- [ ] AC4 Each Locations entry opens its folder on the selected device. A missing folder shows the normal
+- [x] AC4 Each Locations entry opens its folder on the selected device. A missing folder shows the normal
       "not found" state. Disabled when no device is usable.
-- [ ] AC5 Hovering or selecting a folder for > 150 ms prefetches it, so opening it shows `source=cache`. Moving away
+- [x] AC5 Hovering or selecting a folder for > 150 ms prefetches it, so opening it shows `source=cache`. Moving away
       sooner starts no listing. Prefetch never delays opening another folder.
-- [ ] AC6 Pairing with a code, connecting and disconnecting a phone over Wi-Fi work from the sheet. Errors from adb
+- [ ] AC6 (deferred by the user: not verified with the phone, see evidence) Pairing with a code, connecting and disconnecting a phone over Wi-Fi work from the sheet. Errors from adb
       ("failed to connect", wrong code) are shown readably.
-- [ ] AC7 Thumbnail cache stays ≤ 500 MB after launch. The interactive connection reuse is decided by measurement and
+- [x] AC7 Thumbnail cache stays ≤ 500 MB after launch. The interactive connection reuse is decided by measurement and
       recorded.
-- [ ] AC8 Signposts visible in Instruments for list, transfer, thumbnail, preview, prefetch.
-- [ ] AC9 Drag hint shows "Move to “X”" / "Copy to “X”" / "Upload to “X”" near the cursor. Or: recorded as dropped
+- [x] AC8 Signposts visible in Instruments for list, transfer, thumbnail, preview, prefetch.
+- [x] AC9 Drag hint shows "Move to “X”" / "Copy to “X”" / "Upload to “X”" near the cursor. Or: recorded as dropped
       after a failed spike.
-- [ ] AC10 Clean build 0 warnings; tests green; `AdbKit` imports no SwiftUI/AppKit.
+- [x] AC10 Clean build 0 warnings; tests green; `AdbKit` imports no SwiftUI/AppKit.
 
 ## Edge cases
 | Case | Expected behaviour | Decided by |
