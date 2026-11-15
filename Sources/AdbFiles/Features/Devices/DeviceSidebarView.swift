@@ -1,9 +1,11 @@
 import AdbKit
 import SwiftUI
 
-/// Sidebar listing connected devices.
+/// Sidebar listing connected devices, then the fixed Locations of the selected device.
 struct DeviceSidebarView: View {
     let store: DeviceStore
+    /// The browser of this window (nil while no usable device is shown), as for the Go menu.
+    @FocusedValue(\.browser) private var browser
 
     var body: some View {
         List(selection: selection) {
@@ -16,6 +18,22 @@ struct DeviceSidebarView: View {
                     ForEach(store.devices) { device in
                         DeviceRow(device: device).tag(device.serial)
                     }
+                }
+            }
+            Section("Locations") {
+                ForEach(Bookmark.all) { bookmark in
+                    let isCurrent = browser?.path == bookmark.path
+                    Button {
+                        browser?.navigate(to: bookmark.path, action: "bookmark")
+                    } label: {
+                        Label(bookmark.name, systemImage: bookmark.symbol)
+                            .fontWeight(isCurrent ? .semibold : .regular)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(browser == nil)
+                    .selectionDisabled()
+                    .accessibilityAddTraits(isCurrent ? .isSelected : [])
+                    .help(bookmark.path)
                 }
             }
         }

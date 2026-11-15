@@ -19,9 +19,11 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut(.downArrow, modifiers: .command)
                 .disabled(browser?.selection.count != 1)
             Divider()
-            Button("Internal Storage") { browser?.navigate(to: BrowserStore.startPath) }
-                .keyboardShortcut("i", modifiers: [.command, .shift])
-                .disabled(browser == nil)
+            ForEach(Bookmark.all) { bookmark in
+                Button(bookmark.name) { browser?.navigate(to: bookmark.path, action: "bookmark") }
+                    .keyboardShortcut(Self.shortcut(for: bookmark))
+                    .disabled(browser == nil)
+            }
         }
         CommandGroup(after: .toolbar) {
             Button("Refresh") { browser?.refresh() }
@@ -33,6 +35,16 @@ struct BrowserCommands: Commands {
             .keyboardShortcut(".", modifiers: [.command, .shift])
             .disabled(browser == nil)
             Divider()
+        }
+    }
+
+    /// Finder-like shortcuts where Finder has an equivalent (⇧⌘I was already Internal Storage).
+    private static func shortcut(for bookmark: Bookmark) -> KeyboardShortcut? {
+        switch bookmark.path {
+        case "/sdcard": KeyboardShortcut("i", modifiers: [.command, .shift])
+        case "/sdcard/Download": KeyboardShortcut("l", modifiers: [.command, .option])
+        case "/sdcard/Documents": KeyboardShortcut("o", modifiers: [.command, .shift])
+        default: nil
         }
     }
 }
