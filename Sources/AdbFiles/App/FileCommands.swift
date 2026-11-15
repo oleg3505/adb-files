@@ -3,12 +3,17 @@ import SwiftUI
 /// File menu: New Folder (⌘⇧N), Rename, Delete (⌘⌫), Copy Path (⌥⌘C), acting on the focused browser.
 struct FileCommands: Commands {
     @FocusedValue(\.browser) private var browser
+    @FocusedValue(\.preview) private var preview
     // Like a hook returning a function: opens (or brings forward) a window scene by id.
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("Connect via Wi-Fi…") { openWindow(id: WifiConnectView.windowID) }
+            Divider()
+            Button("Quick Look") { if let browser { preview?.toggle(browser.selectedRows.map(\.file)) } }
+                .keyboardShortcut("y", modifiers: .command)
+                .disabled(preview == nil || PreviewController.previewable((browser?.selectedRows ?? []).map(\.file)).isEmpty)
             Divider()
             Button("New Folder") { browser?.newFolder() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])

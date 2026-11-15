@@ -11,8 +11,11 @@ protocol PreviewDownloading: Sendable {
 /// thumbnail reads (and never behind transfers, which have their own connections).
 struct InteractivePreviewDownloader: PreviewDownloading {
     let client: AdbSyncClient
+    private static let signposter = OSSignposter(logger: .ui)
 
     func download(_ file: RemoteFile, to url: URL) async throws {
+        let interval = Self.signposter.beginInterval("preview", id: Self.signposter.makeSignpostID(), "\(file.name, privacy: .public)")
+        defer { Self.signposter.endInterval("preview", interval) }
         let clock = ContinuousClock()
         let started = clock.now
         let session = try await client.openInteractiveSession(priority: .high)

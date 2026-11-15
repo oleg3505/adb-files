@@ -25,6 +25,7 @@ struct BrowserView: View {
             if let store {
                 content(store)
                     .focusedSceneValue(\.browser, store)
+                    .focusedSceneValue(\.preview, preview)
                     .navigationTitle(store.path == "/" ? device.displayName : (store.path as NSString).lastPathComponent)
                     .navigationSubtitle(device.displayName)
                     .toolbar { toolbar(store) }
@@ -231,9 +232,19 @@ struct FocusedBrowserKey: FocusedValueKey {
     typealias Value = BrowserStore
 }
 
+/// Lets the File menu's Quick Look act on the focused window's preview controller.
+struct FocusedPreviewKey: FocusedValueKey {
+    typealias Value = PreviewController
+}
+
 extension FocusedValues {
     var browser: BrowserStore? {
         get { self[FocusedBrowserKey.self] }
         set { self[FocusedBrowserKey.self] = newValue }
+    }
+
+    var preview: PreviewController? {
+        get { self[FocusedPreviewKey.self] }
+        set { self[FocusedPreviewKey.self] = newValue }
     }
 }
