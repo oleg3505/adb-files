@@ -15,7 +15,7 @@ Working name: **AdbFiles** (can be renamed later).
 2. **Feels native.** It behaves like Finder: keyboard navigation, drag & drop, Quick Look, context menus, dark mode, standard shortcuts.
 3. **Reliable.** It handles device unplugging, timeouts and huge folders gracefully.
 
-Non-goals: Windows/Linux support, Mac App Store distribution, MTP support, distribution to other users.
+Non-goals: Windows/Linux support, Mac App Store distribution, MTP support, notarized or App Store-grade distribution (an ad-hoc signed DMG is published on GitHub Releases as-is).
 
 ## Tech stack and constraints
 
@@ -61,6 +61,7 @@ Keep `AdbKit` free of SwiftUI and AppKit, so it stays testable and reusable.
 - `swift build` — compile
 - `swift test` — run unit tests
 - `scripts/build-app.sh` — runs `swift build -c release`, assembles `build/AdbFiles.app` (binary in `Contents/MacOS`, `Info.plist` in `Contents/`, icon in `Contents/Resources`), then ad-hoc signs with `codesign --force --deep -s - build/AdbFiles.app`
+- `scripts/make-dmg.sh` — runs `build-app.sh`, then packs `build/AdbFiles.dmg` (app + Applications shortcut) with `hdiutil`
 - `scripts/run.sh` — builds a debug bundle and opens it with `open`
 
 When the app is launched as a bare executable, call `NSApp.setActivationPolicy(.regular)` and `NSApp.activate()` at startup, so it gets a Dock icon and a menu bar.

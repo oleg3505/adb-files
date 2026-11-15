@@ -1,7 +1,9 @@
 # AdbFiles
 
 Native macOS app for browsing and managing files on Android devices over ADB.
-Personal tool; not distributed.
+**Download:** [AdbFiles.dmg](https://github.com/oleg3505/adb-files/releases/latest/download/AdbFiles.dmg) (Apple silicon, macOS 14+) ·
+[project page](https://oleg3505.github.io/adb-files/). The build is ad-hoc signed, not notarized: on first launch,
+right-click the app → Open (or `xattr -dr com.apple.quarantine /Applications/AdbFiles.app`).
 
 ## Requirements
 
@@ -16,6 +18,7 @@ swift build            # compile
 swift test             # unit tests
 scripts/run.sh         # debug .app bundle, then launch it
 scripts/build-app.sh   # release build → build/AdbFiles.app (ad-hoc signed)
+scripts/make-dmg.sh    # build-app.sh, then build/AdbFiles.dmg
 ```
 
 `.build/debug/AdbFiles` can also be run directly; the app sets a regular activation policy, so it still
@@ -60,6 +63,13 @@ Caches: thumbnails in `~/Library/Caches/AdbFiles/thumbs/<serial>/` (safe to dele
 `~/Library/Caches/AdbFiles/preview/` (cleared at every launch).
 
 App logs: `/usr/bin/log stream --level info --predicate 'subsystem == "dev.local.AdbFiles"'`.
+
+## Releases and website
+
+- Bump `CFBundleShortVersionString` in `Resources/Info.plist`, run `scripts/make-dmg.sh`, then attach
+  `build/AdbFiles.dmg` to a new GitHub Release (`gh release create vX.Y.Z build/AdbFiles.dmg`). The download link
+  always points at the latest release's `AdbFiles.dmg`.
+- `site/` is the GitHub Pages site; `.github/workflows/pages.yml` deploys it on every push to `main` that changes it.
 
 ## Layout
 
