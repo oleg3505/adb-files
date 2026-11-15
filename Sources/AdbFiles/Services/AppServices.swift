@@ -38,6 +38,7 @@ final class AppServices {
     @ObservationIgnored private var usableSerials: Set<String> = []
     @ObservationIgnored private var thumbnailServices: [String: ThumbnailService] = [:]
     @ObservationIgnored private var conflictPlanner: ConflictPlanner?
+    @ObservationIgnored private var prefetchers: [String: Prefetcher] = [:]
 
     init() {
         // Quick Look copies are only for this run.
@@ -75,6 +76,14 @@ final class AppServices {
             Logger.transfer.info("transfers planned requested=\(requests.count) enqueued=\(planned.count)")
             transfers.enqueue(planned)
         }
+    }
+
+    /// One prefetcher per device: every window shares the device's single listing connection.
+    func prefetcher(for serial: String) -> Prefetcher {
+        if let existing = prefetchers[serial] { return existing }
+        let prefetcher = Prefetcher(serial: serial, listing: clients.client(for: serial), cache: listingCache)
+        prefetchers[serial] = prefetcher
+        return prefetcher
     }
 
     /// One thumbnail service per device (its own memory cache; reads on the interactive connection).

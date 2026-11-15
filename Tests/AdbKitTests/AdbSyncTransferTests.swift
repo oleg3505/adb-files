@@ -183,8 +183,8 @@ struct AdbSyncTransferTests {
         try await session.upload(source, to: "/sdcard/Download/a.txt", replace: true) { _ in }
         await session.close()
         #expect(fs.node(at: "/sdcard/Download/a.txt")?.data == Data("new content".utf8))
-        #expect(!fs.paths.contains("/sdcard/Download/.a.txt.adbfiles-part"))
-        #expect(fs.commands.contains { $0.hasPrefix("mv -f -- '/sdcard/Download/.a.txt.adbfiles-part' '/sdcard/Download/a.txt'") })
+        #expect(!fs.paths.contains { $0.hasSuffix(".adbfiles-part") })
+        #expect(fs.commands.contains { $0.hasPrefix("mv -f -- '/sdcard/Download/.a.txt.") && $0.contains(".adbfiles-part' '/sdcard/Download/a.txt'") })
     }
 
     @Test func cancelledReplaceUploadKeepsTheOriginalAndRemovesThePart() async throws {
@@ -208,9 +208,56 @@ struct AdbSyncTransferTests {
         let deadline = clock.now + .seconds(2)
         while fs.commands.allSatisfy({ !$0.hasPrefix("rm -f --") }), clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(fs.node(at: "/sdcard/Download/a.bin")?.data == Data("original".utf8), "the original is untouched")
-        #expect(!fs.paths.contains("/sdcard/Download/.a.bin.adbfiles-part"))
+        #expect(!fs.paths.contains { $0.hasSuffix(".adbfiles-part") })
         #expect(!fs.commands.contains { $0.hasPrefix("mv") }, "nothing moved over the original")
-        #expect(fs.commands.contains { $0.hasPrefix("rm -f -- '/sdcard/Download/.a.bin.adbfiles-part'") }, "part cleaned up")
+        #expect(fs.commands.contains { $0.hasPrefix("rm -f -- '/sdcard/Download/.a.bin.") }, "part cleaned up")
+    }
+
+    @Test func replaceUploadOntoARemoteFolderIsRefused() async throws {
+        let fs = FakeFileSystem(directories: ["/sdcard/Download/foo"], files: ["/sdcard/Download/foo/keep.txt": Data("k".utf8)])
+        let (client, server) = try await makeClient(FakeDevice(fs: fs))
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("foo")
+        try Data("file".utf8).write(to: source)
+        let session = try await client.openTransferSession()
+        await #expect(throws: AdbError.self) { try await session.upload(source, to: "/sdcard/Download/foo", replace: true) { _ in } }
+        await session.close()
+        #expect(fs.node(at: "/sdcard/Download/foo")?.isDirectory == true)
+        #expect(fs.node(at: "/sdcard/Download/foo/keep.txt") != nil)
+        #expect(!fs.commands.contains { $0.hasPrefix("mv") })
+    }
+
+    @Test func overwritingDownloadNeverDeletesALocalFolder() async throws {
+        let (client, server) = try await makeClient(FakeDevice(files: ["/sdcard/Photos": payload(1000)]))
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let folder = dir.appendingPathComponent("Photos")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("mine".utf8).write(to: folder.appendingPathComponent("holiday.jpg"))
+        let session = try await client.openTransferSession()
+        await #expect(throws: AdbError.self) {
+            try await session.download("/sdcard/Photos", to: folder, modificationDate: nil, overwrite: true) { _ in }
+        }
+        await session.close()
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("holiday.jpg").path), "the folder is intact")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["Photos"], "no temp file left")
+    }
+
+    @Test func overwritingDownloadReplacesAFile() async throws {
+        let (client, server) = try await makeClient(FakeDevice(files: ["/sdcard/a.txt": Data("new".utf8)]))
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let target = dir.appendingPathComponent("a.txt")
+        try Data("old".utf8).write(to: target)
+        let session = try await client.openTransferSession()
+        try await session.download("/sdcard/a.txt", to: target, modificationDate: nil, overwrite: true) { _ in }
+        await session.close()
+        #expect(try Data(contentsOf: target) == Data("new".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["a.txt"])
     }
 
     @Test func uploadFailCarriesMessage() async throws {

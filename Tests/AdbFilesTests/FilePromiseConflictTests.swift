@@ -61,6 +61,27 @@ import Testing
         #expect(recorder.requests.withLock { $0.map(\.conflict) } == [.keepBoth])
     }
 
+    @Test func anExistingFolderIsAskedAsAFolderAndNeverReplaced() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("adbfiles-promise-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("a.txt"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let questions = OSAllocatedUnfairLock(initialState: [ConflictQuestion]())
+        let file = RemoteFile(name: "a.txt", path: "/sdcard/a.txt", mode: 0o100660, size: 3, modificationDate: nil)
+        let delegate = FilePromiseDelegate(
+            file: file, serial: "S", enqueue: { _, done in done(.done(copied: 1, skipped: 0)) },
+            askConflict: { question in
+                questions.withLock { $0.append(question) }
+                return .init(choice: .keepBoth)
+            }
+        )
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            delegate.filePromiseProvider(delegate.makeProvider(), writePromiseTo: folder.appendingPathComponent("a 2.txt")) { _ in
+                continuation.resume()
+            }
+        }
+        #expect(questions.withLock { $0.map(\.isFolder) } == [true])
+    }
+
     @Test func skipCopiesNothingAndTellsFinderTheUserCancelled() async throws {
         let recorder = try await run(existing: ["a.txt"], finderName: "a 2.txt", answer: .init(choice: .skip))
         #expect(recorder.requests.withLock { $0 }.isEmpty)

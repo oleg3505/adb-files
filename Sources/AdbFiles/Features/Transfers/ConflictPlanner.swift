@@ -5,6 +5,7 @@ import os
 /// One name clash shown to the user.
 struct ConflictQuestion: Equatable, Sendable {
     let name: String
+    /// The incoming or the existing item is a folder: Replace is not offered.
     let isFolder: Bool
     /// Display name of the destination folder ("Download", "Desktop").
     let destination: String
@@ -31,8 +32,8 @@ struct ConflictAnswer: Equatable, Sendable {
 /// check is also resolved with keep-both by the queue.
 @MainActor
 final class ConflictPlanner {
-    /// Names present in a request's destination folder (remote listing or local directory).
-    typealias Lookup = @Sendable (TransferRequest) async throws -> Set<String>
+    /// Items present in a request's destination folder: name → whether it is a folder.
+    typealias Lookup = @Sendable (TransferRequest) async throws -> [String: Bool]
     typealias Ask = @MainActor (ConflictQuestion) async -> ConflictAnswer
 
     private let lookup: Lookup
@@ -46,24 +47,29 @@ final class ConflictPlanner {
     /// The requests to enqueue: clashing ones carry the chosen `conflict`; skipped ones are left out; empty when
     /// the user stopped.
     func plan(_ requests: [TransferRequest]) async -> [TransferRequest] {
-        var existing: [String: Set<String>] = [:]
+        var existing: [String: [String: Bool]] = [:]
         for request in requests where request.fixedName == nil {
             let key = Self.folderKey(request)
             guard existing[key] == nil else { continue }
             do {
-                let names = try await lookup(request)
-                existing[key] = Set(names.map { Self.normalized($0, request) })
+                let items = try await lookup(request)
+                existing[key] = Dictionary(items.map { (Self.normalized($0.key), $0.value) }, uniquingKeysWith: { $0 || $1 })
             } catch {
                 Logger.transfer.error("conflict check failed folder=\(request.targetFolder, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                existing[key] = []
+                existing[key] = [:]
             }
         }
-        func clashes(_ request: TransferRequest) -> Bool {
-            request.fixedName == nil && existing[Self.folderKey(request)]?.contains(Self.normalized(request.name, request)) == true
+        /// nil: no clash; otherwise whether the existing item is a folder.
+        func clash(_ request: TransferRequest) -> Bool? {
+            guard request.fixedName == nil else { return nil }
+            return existing[Self.folderKey(request)]?[Self.normalized(request.name)]
         }
+        func clashes(_ request: TransferRequest) -> Bool { clash(request) != nil }
+        // A folder on either side never offers Replace (it would delete or nest a whole folder).
+        func folderKind(_ request: TransferRequest) -> Bool { request.isFolder || clash(request) == true }
 
-        var remaining = (files: requests.filter { clashes($0) && !$0.isFolder }.count,
-                         folders: requests.filter { clashes($0) && $0.isFolder }.count)
+        var remaining = (files: requests.filter { clashes($0) && !folderKind($0) }.count,
+                         folders: requests.filter { clashes($0) && folderKind($0) }.count)
         var sticky: (files: ConflictChoice?, folders: ConflictChoice?) = (nil, nil)
         var planned: [TransferRequest] = []
         for var request in requests {
@@ -71,7 +77,7 @@ final class ConflictPlanner {
                 planned.append(request)
                 continue
             }
-            let isFolder = request.isFolder
+            let isFolder = folderKind(request)
             var choice = isFolder ? sticky.folders : sticky.files
             if choice == nil {
                 let question = ConflictQuestion(
@@ -105,9 +111,9 @@ final class ConflictPlanner {
         "\(request.direction)|\(request.serial)|\(request.targetFolder)"
     }
 
-    /// Android's shared storage is case-insensitive, so remote names are compared without case.
-    private static func normalized(_ name: String, _ request: TransferRequest) -> String {
-        request.direction == .upload ? name.lowercased() : name
+    /// Android's shared storage and APFS (by default) are case-insensitive, so names are compared without case.
+    private static func normalized(_ name: String) -> String {
+        name.lowercased()
     }
 
     private static func displayName(_ folder: String) -> String {
@@ -124,9 +130,14 @@ extension ConflictPlanner {
             switch request.direction {
             case .upload:
                 let files = try await client(request.serial).list(request.targetFolder)
-                return Set(files.map(\.name))
+                return Dictionary(files.map { ($0.name, $0.isDirectory) }, uniquingKeysWith: { $0 || $1 })
             case .download:
-                return Set(try FileManager.default.contentsOfDirectory(atPath: request.targetFolder))
+                let folder = URL(fileURLWithPath: request.targetFolder, isDirectory: true)
+                let urls = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey])
+                return Dictionary(
+                    urls.map { ($0.lastPathComponent, (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true) },
+                    uniquingKeysWith: { $0 || $1 }
+                )
             }
         }
     }

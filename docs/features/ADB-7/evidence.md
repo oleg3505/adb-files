@@ -124,4 +124,36 @@ How results were collected:
   `~/Documents/a.txt`. It was removed with the user's OK after its content was checked.
 
 ### Self-review
-- (filled in after `/review-pr`)
+`code-reviewer` on `main..HEAD` found 1 blocking, 3 should-fix and 4 nits. All blocking and should-fix items are
+fixed; tests went from 300 to 305.
+
+- **Blocking — Replace could delete a whole folder on the Mac.**
+  - Cause: clashes were decided by name only. Downloading a remote *file* named `Photos` next to a local *folder*
+    `Photos` offered Replace, and `download(overwrite:)` then ran `removeItem` on the folder.
+  - Fix, part 1: the lookup now returns name → is-folder. A folder on either side asks Keep Both / Skip only. This
+    covers the planner and the promise delegate.
+  - Fix, part 2: `download(overwrite:)` refuses to overwrite a folder and swaps files atomically with
+    `replaceItemAt`.
+  - Tests:
+    - `aFileClashingWithAnExistingFolderIsNeverReplaced`;
+    - `anExistingFolderIsAskedAsAFolderAndNeverReplaced`;
+    - `overwritingDownloadNeverDeletesALocalFolder`;
+    - `overwritingDownloadReplacesAFile`.
+  - Mutation checks (restored afterwards): removing the planner's folder check fails the planner test; removing the
+    download guard fails the folder test.
+  - **Not verified live:** the user skipped the check; the first attempt left no actions in the log.
+- **Replace-upload onto a remote folder:** `upload(replace:)` now `lstat`s the target and refuses a folder
+  (`replaceUploadOntoARemoteFolderIsRefused`).
+- **Prefetch across windows:** there is now one `Prefetcher` per device (`AppServices`), shared by every window on
+  the device's single listing connection.
+- **Download clashes ignored case:** comparison is now case-insensitive in both directions, matching APFS's default
+  (`namesCompareWithoutCaseInBothDirections`).
+- **Nits:**
+  - fixed: each upload attempt now gets a unique part-file name, so a late cleanup can't hit a retry;
+  - fixed: the tracking area is removed in `dismantleNSView`;
+  - noted, unchanged: the pair *success* framing is only fixture-tested;
+  - noted, unchanged: a failed Disconnect is only logged.
+- After the fixes:
+  - clean build, 0 warnings;
+  - 305 tests, 3/3 runs green;
+  - live suites 22/22 including writes, and the test folder is removed afterwards.

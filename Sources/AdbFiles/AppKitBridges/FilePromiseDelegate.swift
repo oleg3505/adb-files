@@ -52,14 +52,17 @@ final class FilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate, Sendab
         let done = CompletionBox(completionHandler)
         let folder = url.deletingLastPathComponent()
         // Finder renames silently ("name 2.ext") when the name is taken; ask like an upload would.
+        var existingIsFolder: ObjCBool = false
         let clash = url.lastPathComponent != file.name
-            && FileManager.default.fileExists(atPath: folder.appendingPathComponent(file.name).path)
+            && FileManager.default.fileExists(atPath: folder.appendingPathComponent(file.name).path, isDirectory: &existingIsFolder)
         guard clash else {
             start(name: url.lastPathComponent, in: folder, conflict: .keepBoth, done: done)
             return
         }
+        // A folder on either side: Keep Both / Skip only (Replace would delete or nest a folder).
         let question = ConflictQuestion(
-            name: file.name, isFolder: file.isDirectory, destination: folder.lastPathComponent, remaining: 1, direction: .download
+            name: file.name, isFolder: file.isDirectory || existingIsFolder.boolValue, destination: folder.lastPathComponent,
+            remaining: 1, direction: .download
         )
         let ask = askConflict
         Task {

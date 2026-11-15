@@ -6,10 +6,11 @@ import Testing
 
 /// Names per destination folder; counts lookups.
 final class FakeNames: Sendable {
-    private let state = OSAllocatedUnfairLock(initialState: (names: [String: Set<String>](), calls: [String](), failing: Set<String>()))
+    private let state = OSAllocatedUnfairLock(initialState: (names: [String: Set<String>](), folders: Set<String>(), calls: [String](), failing: Set<String>()))
 
-    init(_ names: [String: Set<String>], failing: Set<String> = []) {
-        state.withLock { $0.names = names; $0.failing = failing }
+    /// - Parameter folders: Names (in any folder) that are folders.
+    init(_ names: [String: Set<String>], folders: Set<String> = [], failing: Set<String> = []) {
+        state.withLock { $0.names = names; $0.folders = folders; $0.failing = failing }
     }
 
     var calls: [String] { state.withLock { $0.calls } }
@@ -19,7 +20,8 @@ final class FakeNames: Sendable {
             try state.withLock { state in
                 state.calls.append(request.targetFolder)
                 if state.failing.contains(request.targetFolder) { throw AdbError.timeout }
-                return state.names[request.targetFolder] ?? []
+                let folders = state.folders
+                return Dictionary(uniqueKeysWithValues: (state.names[request.targetFolder] ?? []).map { ($0, folders.contains($0)) })
             }
         }
     }
@@ -99,12 +101,21 @@ private func down(_ name: String, to target: String = "/Users/me/Desktop") -> Tr
         #expect(names.calls.sorted() == ["/sdcard/DCIM", "/sdcard/Download"])
     }
 
-    @Test func remoteNamesCompareWithoutCaseLocalWithCase() async {
-        let answers = ScriptedAnswers([.init(choice: .skip)])
+    @Test func namesCompareWithoutCaseInBothDirections() async {
+        let answers = ScriptedAnswers([.init(choice: .skip), .init(choice: .skip)])
         let names = FakeNames(["/sdcard/Download": ["A.TXT"], "/Users/me/Desktop": ["B.TXT"]])
         let planned = await planner(names, answers).plan([up("a.txt"), down("b.txt")])
-        #expect(answers.questions.map(\.name) == ["a.txt"], "case-insensitive /sdcard; the Mac lookup compares exactly")
-        #expect(planned.map(\.name) == ["b.txt"])
+        #expect(answers.questions.map(\.name) == ["a.txt", "b.txt"], "/sdcard and APFS are case-insensitive")
+        #expect(planned.isEmpty)
+    }
+
+    @Test func aFileClashingWithAnExistingFolderIsNeverReplaced() async {
+        // A remote file "Photos" downloaded where the Mac has a folder "Photos": Replace would delete the folder.
+        let names = FakeNames(["/Users/me/Desktop": ["Photos"], "/sdcard/Download": ["foo"]], folders: ["Photos", "foo"])
+        let answers = ScriptedAnswers([.init(choice: .replace), .init(choice: .replace)])
+        let planned = await planner(names, answers).plan([down("Photos"), up("foo")])
+        #expect(answers.questions.map(\.isFolder) == [true, true], "asked as a folder clash: no Replace button")
+        #expect(planned.map(\.conflict) == [.keepBoth, .keepBoth])
     }
 
     @Test func failedLookupGoesAheadWithKeepBoth() async {

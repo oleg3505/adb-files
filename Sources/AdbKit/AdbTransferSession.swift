@@ -69,10 +69,17 @@ public actor AdbTransferSession {
             try await receive(remotePath, into: handle, progress: progress)
             try handle.close()
             if let modificationDate { TransferIO.setModificationDate(modificationDate, of: temp) }
-            if overwrite, FileManager.default.fileExists(atPath: target.path) {
-                try? FileManager.default.removeItem(at: target)
+            var isDirectory: ObjCBool = false
+            if overwrite, FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory) {
+                // Never delete a folder to make room for a file; swap files atomically (the old one survives a
+                // failed swap).
+                guard !isDirectory.boolValue else {
+                    throw AdbError.localIOError("“\(target.lastPathComponent)” is a folder on this Mac; it was not replaced.")
+                }
+                _ = try FileManager.default.replaceItemAt(target, withItemAt: temp)
+            } else {
+                try TransferIO.moveWithoutOverwrite(temp, to: target)
             }
-            try TransferIO.moveWithoutOverwrite(temp, to: target)
         } catch {
             try? FileManager.default.removeItem(at: temp)
             throw error
@@ -91,6 +98,9 @@ public actor AdbTransferSession {
             try await send(source, to: remotePath, progress: progress)
             return
         }
+        if try await lstat(remotePath).isDirectory {
+            throw AdbError.serverFailure("“\((remotePath as NSString).lastPathComponent)” is a folder on the device; it was not replaced.")
+        }
         let part = Self.partPath(for: remotePath)
         do {
             try await send(source, to: part, progress: progress)
@@ -105,10 +115,12 @@ public actor AdbTransferSession {
         }
     }
 
-    /// `.<name>.adbfiles-part` in the same folder (hidden, and on the same file system so `mv` is a rename).
+    /// `.<name>.<attempt>.adbfiles-part` in the same folder: hidden, on the same file system so `mv` is a rename,
+    /// and unique per attempt so a previous attempt's late cleanup can't remove it.
     static func partPath(for remotePath: String) -> String {
         let name = (remotePath as NSString).lastPathComponent
-        return RemotePath.join(RemotePath.parent(of: remotePath) ?? "/", ".\(name).adbfiles-part")
+        let attempt = UUID().uuidString.prefix(8).lowercased()
+        return RemotePath.join(RemotePath.parent(of: remotePath) ?? "/", ".\(name).\(attempt).adbfiles-part")
     }
 
     private func send(_ source: URL, to remotePath: String, progress: @escaping @Sendable (Int) -> Void) async throws {

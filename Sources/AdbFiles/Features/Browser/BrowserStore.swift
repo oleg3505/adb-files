@@ -85,7 +85,7 @@ final class BrowserStore {
     init(
         serial: String, listing: any DirectoryListing, cache: ListingCache, startPath: String = BrowserStore.startPath,
         pipeline: RowPipeline = RowPipeline(), operations: (any FileOperating)? = nil,
-        prefetchSleep: Prefetcher.Sleep? = nil
+        prefetchSleep: Prefetcher.Sleep? = nil, prefetcher: Prefetcher? = nil
     ) {
         self.serial = serial
         self.listing = listing
@@ -93,10 +93,12 @@ final class BrowserStore {
         self.operations = operations
         self.pipeline = pipeline
         self.path = RemotePath.normalized(startPath)
-        if let prefetchSleep {
-            prefetcher = Prefetcher(serial: serial, listing: listing, cache: cache, sleep: prefetchSleep)
+        if let prefetcher {
+            self.prefetcher = prefetcher // shared by every window on this device (one listing connection)
+        } else if let prefetchSleep {
+            self.prefetcher = Prefetcher(serial: serial, listing: listing, cache: cache, sleep: prefetchSleep)
         } else {
-            prefetcher = Prefetcher(serial: serial, listing: listing, cache: cache)
+            self.prefetcher = Prefetcher(serial: serial, listing: listing, cache: cache)
         }
     }
 

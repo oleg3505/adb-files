@@ -6,8 +6,9 @@ import os
 /// it is instant (CLAUDE.md § Performance: prefetch).
 ///
 /// One target at a time: a new target cancels the previous one. The listing connection is shared with
-/// navigation, so the browser either reuses an in-flight prefetch of the folder it opens (`take`) or cancels it
-/// first (`cancel`) — a prefetch never delays opening another folder.
+/// navigation — by every window on the device — so there is one prefetcher per device (`AppServices`): any
+/// browser either reuses an in-flight prefetch of the folder it opens (`take`) or cancels it first, and a prefetch
+/// never delays opening another folder in any window.
 @MainActor
 final class Prefetcher {
     typealias Sleep = @Sendable (Duration) async throws -> Void

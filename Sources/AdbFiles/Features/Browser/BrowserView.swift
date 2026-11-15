@@ -200,7 +200,8 @@ struct BrowserView: View {
         let startPath = ProcessInfo.processInfo.environment["ADBFILES_START_PATH"] ?? BrowserStore.startPath
         let newStore = BrowserStore(
             serial: serial, listing: client, cache: services.listingCache, startPath: startPath,
-            operations: AdbFileOperations(serial: serial, client: client)
+            operations: AdbFileOperations(serial: serial, client: client),
+            prefetcher: services.prefetcher(for: serial)
         )
         let newPresenter = QuickLookPanelPresenter()
         let newPreview = PreviewController(

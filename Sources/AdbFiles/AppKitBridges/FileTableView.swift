@@ -120,6 +120,9 @@ struct FileTableView: NSViewRepresentable {
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
         coordinator.stopWatchingMouseDown()
+        if let table = scroll.documentView as? NSTableView {
+            for area in table.trackingAreas where area.owner === coordinator { table.removeTrackingArea(area) }
+        }
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
