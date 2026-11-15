@@ -47,8 +47,9 @@ public actor AdbTransferSession {
 
     /// Downloads one remote file to `target`, via `target.adbfiles-part`, then sets its modification time.
     /// - Parameters:
-    ///   - overwrite: Replace an existing `target` (only inside a folder this transfer owns); otherwise an
-    ///     existing target fails with `AdbError.localFileExists` and is left untouched.
+    ///   - overwrite: Replace an existing `target` — inside a folder this transfer owns, or when the user chose
+    ///     Replace. The new file is complete before it replaces the old one. Otherwise an existing target fails with
+    ///     `AdbError.localFileExists` and is left untouched.
     ///   - progress: Called with the number of bytes written for each chunk.
     public func download(
         _ remotePath: String, to target: URL, modificationDate: Date?, overwrite: Bool = false,
@@ -80,7 +81,37 @@ public actor AdbTransferSession {
 
     /// Uploads one local file to `remotePath`, preserving its modification time and permissions.
     /// adbd creates missing parent folders and deletes the partial file if the transfer breaks.
-    public func upload(_ source: URL, to remotePath: String, progress: @escaping @Sendable (Int) -> Void) async throws {
+    /// - Parameter replace: The user chose to replace an existing `remotePath`. The file is then sent to a hidden
+    ///   part file next to it and moved over the original only once complete, so a failed or cancelled upload never
+    ///   leaves a truncated original (`SEND` writes in place). Without it `SEND` writes `remotePath` directly.
+    public func upload(
+        _ source: URL, to remotePath: String, replace: Bool = false, progress: @escaping @Sendable (Int) -> Void
+    ) async throws {
+        guard replace else {
+            try await send(source, to: remotePath, progress: progress)
+            return
+        }
+        let part = Self.partPath(for: remotePath)
+        do {
+            try await send(source, to: part, progress: progress)
+            try Task.checkCancellation()
+            try await AdbShell.runChecked(AdbShell.command("mv -f --", [part, remotePath]), serial: serial, client: host)
+        } catch {
+            // Clean up even when cancelled (a detached task: this one's cancellation would stop the command).
+            let serial = self.serial
+            let host = self.host
+            Task.detached { _ = try? await AdbShell.runChecked(AdbShell.command("rm -f --", [part]), serial: serial, client: host) }
+            throw error
+        }
+    }
+
+    /// `.<name>.adbfiles-part` in the same folder (hidden, and on the same file system so `mv` is a rename).
+    static func partPath(for remotePath: String) -> String {
+        let name = (remotePath as NSString).lastPathComponent
+        return RemotePath.join(RemotePath.parent(of: remotePath) ?? "/", ".\(name).adbfiles-part")
+    }
+
+    private func send(_ source: URL, to remotePath: String, progress: @escaping @Sendable (Int) -> Void) async throws {
         let handle: FileHandle
         do {
             handle = try FileHandle(forReadingFrom: source)

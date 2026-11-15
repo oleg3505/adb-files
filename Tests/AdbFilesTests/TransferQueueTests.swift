@@ -33,6 +33,7 @@ final class FakeEngine: TransferEngine {
     private struct State {
         var started: [String] = []
         var destinations: [String] = []
+        var conflicts: [ConflictChoice] = []
         var running: [String: Int] = [:]
         var peak: [String: Int] = [:]
         var lastEvents: (@Sendable (TransferEvent) -> Void)?
@@ -63,6 +64,7 @@ final class FakeEngine: TransferEngine {
 
     var started: [String] { state.withLock { $0.started } }
     var destinations: [String] { state.withLock { $0.destinations } }
+    var conflicts: [ConflictChoice] { state.withLock { $0.conflicts } }
     func peak(_ serial: String) -> Int { state.withLock { $0.peak[serial, default: 0] } }
     var lastEvents: (@Sendable (TransferEvent) -> Void)? { state.withLock { $0.lastEvents } }
 
@@ -71,6 +73,7 @@ final class FakeEngine: TransferEngine {
         let behavior: Behavior = state.withLock { state in
             state.started.append(request.name)
             state.destinations.append(destination)
+            state.conflicts.append(request.conflict)
             state.running[request.serial, default: 0] += 1
             state.peak[request.serial] = max(state.peak[request.serial, default: 0], state.running[request.serial, default: 0])
             state.lastEvents = events
@@ -286,6 +289,31 @@ struct TransferQueueTests {
         queue.enqueue([upload("a.txt"), upload("a.txt")])
         try await waitUntil { engine.started.count == 2 }
         #expect(Set(engine.destinations) == ["/sdcard/Download/a.txt", "/sdcard/Download/a 2.txt"])
+        await engine.gates["g"]?.open()
+    }
+
+    @Test func replaceKeepsTheOriginalNameAndTellsTheEngine() async throws {
+        let engine = FakeEngine(remoteExisting: ["/sdcard/Download/a.txt"])
+        let queue = TransferQueue(engine: engine)
+        var request = upload("a.txt")
+        request.conflict = .replace
+        queue.enqueue([request])
+        try await waitUntil { queue.items[0].state.isFinal }
+        #expect(engine.destinations == ["/sdcard/Download/a.txt"])
+        #expect(engine.conflicts == [.replace])
+    }
+
+    @Test func replaceOfANameAnotherItemIsWritingFallsBackToKeepBoth() async throws {
+        let engine = FakeEngine(gates: ["g"])
+        engine.script("a.txt", .gated("g"))
+        let queue = TransferQueue(engine: engine)
+        queue.enqueue([upload("a.txt")])
+        try await waitUntil { engine.started.count == 1 }
+        var replacing = upload("a.txt")
+        replacing.conflict = .replace
+        queue.enqueue([replacing])
+        try await waitUntil { engine.started.count == 2 }
+        #expect(engine.destinations == ["/sdcard/Download/a.txt", "/sdcard/Download/a 2.txt"], "never two transfers into one file")
         await engine.gates["g"]?.open()
     }
 

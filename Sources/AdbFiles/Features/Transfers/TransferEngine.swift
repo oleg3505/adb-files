@@ -48,7 +48,8 @@ struct AdbTransferEngine: TransferEngine {
         case (.download, false):
             events(.prepared(totalBytes: request.size, files: 1))
             try await session.download(
-                request.sourcePath, to: URL(fileURLWithPath: destination), modificationDate: request.modificationDate, progress: progress
+                request.sourcePath, to: URL(fileURLWithPath: destination), modificationDate: request.modificationDate,
+                overwrite: request.conflict == .replace, progress: progress
             )
             var result = FolderTransferResult()
             result.copied = 1
@@ -63,7 +64,9 @@ struct AdbTransferEngine: TransferEngine {
         case (.upload, false):
             let size = TransferIOInfo.size(of: request.sourcePath)
             events(.prepared(totalBytes: size, files: 1))
-            try await session.upload(URL(fileURLWithPath: request.sourcePath), to: destination, progress: progress)
+            try await session.upload(
+                URL(fileURLWithPath: request.sourcePath), to: destination, replace: request.conflict == .replace, progress: progress
+            )
             var result = FolderTransferResult()
             result.copied = 1
             return result

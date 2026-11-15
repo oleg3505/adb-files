@@ -42,6 +42,14 @@ final class FakeFileSystem: Sendable {
     /// Exact-case paths currently present.
     var paths: Set<String> { state.withLock { Set($0.nodes.keys) } }
 
+    /// Stores a file written over sync `SEND` (replacing any file at that exact path).
+    func write(_ path: String, data: Data) {
+        state.withLock { state in
+            Self.makeParents(path, in: &state.nodes)
+            state.nodes[path] = Node(isDirectory: false, data: data)
+        }
+    }
+
     func node(at path: String) -> Node? {
         state.withLock { state in Self.resolve(path, in: state.nodes, caseInsensitive: caseInsensitive).map { state.nodes[$0]! } }
     }

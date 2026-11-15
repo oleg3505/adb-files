@@ -20,6 +20,8 @@ struct FakeDevice: Sendable {
     var silent = false
     /// Pause before each chunk of a LIST/LIS2 reply after the first (with `chunkSize`).
     var listChunkDelay: Duration?
+    /// Pause after reading each `SEND` data frame (a slow device).
+    var sendFrameDelay: Duration?
 
     /// Records every request: "features", "shell:<cmd>", "sync-connection", "LIS2 <path>", …
     let log = OSAllocatedUnfairLock(initialState: [String]())
@@ -108,6 +110,7 @@ struct FakeDevice: Sendable {
                     let (frame, value) = try await client.readSyncHeader()
                     if frame == "DATA" {
                         content += try await client.read(exactly: Int(value))
+                        if let sendFrameDelay { try await Task.sleep(for: sendFrameDelay) }
                     } else if frame == "DONE" {
                         if failSendPaths.contains(target) {
                             let message = Data("couldn't create file: Read-only file system".utf8)
@@ -116,6 +119,7 @@ struct FakeDevice: Sendable {
                         }
                         let finished = content
                         received.withLock { $0[target] = (finished, value, mode) }
+                        fs?.write(target, data: finished)
                         try await client.write(Data("OKAY".utf8) + Self.le(UInt32(0)))
                         break
                     } else {

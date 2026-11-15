@@ -205,6 +205,18 @@ final class TransferQueue {
             items[index].resolvedName = fixed
             return items[index].destinationPath
         }
+        if request.conflict == .replace, !request.isFolder {
+            // The user chose to overwrite: keep the original name unless another item of ours is writing it,
+            // in which case fall back to keep-both below (never two transfers into one file).
+            let name = items[index].resolvedName ?? request.name
+            let owner = reservations[reservationKey(request, name)]
+            if owner == nil || owner == id {
+                reservations[reservationKey(request, name)] = id
+                items[index].resolvedName = name
+                return items[index].destinationPath
+            }
+            Logger.transfer.info("replace fallback keep-both name=\(name, privacy: .public)")
+        }
         if let previous = items[index].resolvedName {
             let owner = reservations[reservationKey(request, previous)]
             let heldByOther = owner != nil && owner != id

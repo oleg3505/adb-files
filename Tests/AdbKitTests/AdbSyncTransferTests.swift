@@ -171,6 +171,48 @@ struct AdbSyncTransferTests {
         #expect(counter.value == content.count)
     }
 
+    @Test func replaceUploadSwapsInTheNewFileViaAPartFile() async throws {
+        let fs = FakeFileSystem(files: ["/sdcard/Download/a.txt": Data("old".utf8)])
+        let (client, server) = try await makeClient(FakeDevice(fs: fs))
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("a.txt")
+        try Data("new content".utf8).write(to: source)
+        let session = try await client.openTransferSession()
+        try await session.upload(source, to: "/sdcard/Download/a.txt", replace: true) { _ in }
+        await session.close()
+        #expect(fs.node(at: "/sdcard/Download/a.txt")?.data == Data("new content".utf8))
+        #expect(!fs.paths.contains("/sdcard/Download/.a.txt.adbfiles-part"))
+        #expect(fs.commands.contains { $0.hasPrefix("mv -f -- '/sdcard/Download/.a.txt.adbfiles-part' '/sdcard/Download/a.txt'") })
+    }
+
+    @Test func cancelledReplaceUploadKeepsTheOriginalAndRemovesThePart() async throws {
+        let fs = FakeFileSystem(files: ["/sdcard/Download/a.bin": Data("original".utf8)])
+        var device = FakeDevice(fs: fs)
+        device.sendFrameDelay = .milliseconds(20)
+        let (client, server) = try await makeClient(device)
+        defer { server.stop() }
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("a.bin")
+        try payload(5_000_000).write(to: source)
+        let counter = ByteCounter()
+        let session = try await client.openTransferSession()
+        let task = Task { try await session.upload(source, to: "/sdcard/Download/a.bin", replace: true, progress: counter.add) }
+        while counter.value < 300_000 { try await Task.sleep(for: .milliseconds(5)) }
+        task.cancel()
+        await #expect(throws: (any Error).self) { try await task.value }
+        await session.close()
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while fs.commands.allSatisfy({ !$0.hasPrefix("rm -f --") }), clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(fs.node(at: "/sdcard/Download/a.bin")?.data == Data("original".utf8), "the original is untouched")
+        #expect(!fs.paths.contains("/sdcard/Download/.a.bin.adbfiles-part"))
+        #expect(!fs.commands.contains { $0.hasPrefix("mv") }, "nothing moved over the original")
+        #expect(fs.commands.contains { $0.hasPrefix("rm -f -- '/sdcard/Download/.a.bin.adbfiles-part'") }, "part cleaned up")
+    }
+
     @Test func uploadFailCarriesMessage() async throws {
         let (client, server) = try await makeClient(FakeDevice(failSendPaths: ["/system/x"]))
         defer { server.stop() }

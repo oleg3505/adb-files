@@ -1,6 +1,7 @@
 import AdbKit
 import Foundation
 import Observation
+import os
 
 /// One `AdbSyncClient` per device, created on first use and reused (it keeps one listing connection).
 @MainActor
@@ -36,6 +37,7 @@ final class AppServices {
     @ObservationIgnored private let clients: SyncClientRegistry
     @ObservationIgnored private var usableSerials: Set<String> = []
     @ObservationIgnored private var thumbnailServices: [String: ThumbnailService] = [:]
+    @ObservationIgnored private var conflictPlanner: ConflictPlanner?
 
     init() {
         // Quick Look copies are only for this run.
@@ -53,6 +55,23 @@ final class AppServices {
 
     func syncClient(for serial: String) -> AdbSyncClient {
         clients.client(for: serial)
+    }
+
+    /// Asks about name clashes first (one sheet per clash, or once with "Apply to all"), then enqueues what the user
+    /// chose. Uploads and Download To… go through here; Finder drags (file promises) don't, Finder decides those.
+    func startTransfers(_ requests: [TransferRequest]) {
+        guard !requests.isEmpty else { return }
+        let clients = self.clients
+        let planner = conflictPlanner ?? ConflictPlanner(
+            lookup: ConflictPlanner.liveLookup { serial in await clients.client(for: serial) },
+            ask: { await ConflictPrompt.ask($0) }
+        )
+        conflictPlanner = planner
+        Task {
+            let planned = await planner.plan(requests)
+            Logger.transfer.info("transfers planned requested=\(requests.count) enqueued=\(planned.count)")
+            transfers.enqueue(planned)
+        }
     }
 
     /// One thumbnail service per device (its own memory cache; reads on the interactive connection).

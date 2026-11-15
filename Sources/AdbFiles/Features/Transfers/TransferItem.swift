@@ -19,8 +19,20 @@ struct TransferRequest: Sendable, Equatable {
     var modificationDate: Date?
     /// A name the destination already chose (Finder file promises); skips keep-both renaming.
     var fixedName: String?
+    /// What to do if the name already exists at the destination (asked before enqueueing).
+    var conflict: ConflictChoice = .keepBoth
 
     var name: String { fixedName ?? (sourcePath as NSString).lastPathComponent }
+}
+
+/// The user's answer to a name clash. `.skip` items are never enqueued.
+enum ConflictChoice: String, Sendable, Equatable {
+    /// Keep the existing item and give the new one a Finder-style name (`a 2.txt`).
+    case keepBoth
+    /// Overwrite the existing file (files only; never offered for folders).
+    case replace
+    /// Don't copy this item.
+    case skip
 }
 
 /// One row in the transfers list.

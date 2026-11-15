@@ -5,7 +5,8 @@ import AppKit
 @MainActor
 enum ContextMenu {
     static func items(
-        clicked: FileRow?, selection: [FileRow], store: BrowserStore, queue: TransferQueue, preview: PreviewController?
+        clicked: FileRow?, selection: [FileRow], store: BrowserStore, startTransfers: @escaping ([TransferRequest]) -> Void,
+        preview: PreviewController?
     ) -> [NSMenuItem] {
         let canOperate = store.canOperate && store.editingPath == nil
         guard clicked != nil, !selection.isEmpty else {
@@ -23,7 +24,7 @@ enum ContextMenu {
                 preview?.toggle(selection.map(\.file))
             },
             .separator(),
-            ClosureMenuItem("Download To…") { TransferActions.downloadSelection(of: store, queue: queue) },
+            ClosureMenuItem("Download To…") { TransferActions.downloadSelection(of: store, start: startTransfers) },
             .separator(),
             ClosureMenuItem("Rename", enabled: canOperate && single != nil) { if let single { store.beginRename(single.id) } },
             ClosureMenuItem("Copy Path") { copyPaths(paths, store: store) },

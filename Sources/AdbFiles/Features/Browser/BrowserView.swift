@@ -137,7 +137,7 @@ struct BrowserView: View {
     }
 
     private func tableActions(_ store: BrowserStore) -> FileTableActions {
-        let queue = services.transfers
+        let start = services.startTransfers
         return FileTableActions(
             canOperate: store.canOperate,
             beginRename: { store.beginRename($0) },
@@ -145,7 +145,7 @@ struct BrowserView: View {
             cancelRename: { store.cancelRename() },
             moveRows: { paths, folder, copy in store.transfer(paths, into: folder, copy: copy) },
             menuItems: { clicked, selection in
-                ContextMenu.items(clicked: clicked, selection: selection, store: store, queue: queue, preview: preview)
+                ContextMenu.items(clicked: clicked, selection: selection, store: store, startTransfers: start, preview: preview)
             },
             dragChanged: { store.draggingPaths = $0 },
             quickLook: { preview?.toggle(store.selectedRows.map(\.file)) }
@@ -187,7 +187,7 @@ struct BrowserView: View {
     }
 
     private func upload(_ urls: [URL], into remoteFolder: String, store: BrowserStore) {
-        services.transfers.enqueue(TransferActions.uploadRequests(urls, serial: store.serial, to: remoteFolder))
+        services.startTransfers(TransferActions.uploadRequests(urls, serial: store.serial, to: remoteFolder))
         Logger.transfer.info("drop upload items=\(urls.count) folder=\(remoteFolder, privacy: .public)")
     }
 

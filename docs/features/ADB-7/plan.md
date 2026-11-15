@@ -74,6 +74,10 @@ edit in R1 (as ADR-001 in ADB-6; user-approved 2026-11-15). Wi-Fi uses the same 
     original: it uploads to `.<name>.adbfiles-part` in the same folder, then `mv -f -- part target` via `AdbShell` (a
     failed or cancelled upload leaves the original intact and removes the part).
   - Entry points: `TransferActions.swift`, `BrowserView.upload`, path-bar drop.
+  - Drag to Finder (added by the user during R3): `AppKitBridges/FilePromiseDelegate.swift` — Finder hands over a
+    URL it already renamed (`a 2.txt`); when the folder holds the original name, ask via `ConflictPrompt`. Replace
+    writes the original name (download `overwrite`), Keep Both writes Finder's URL, Skip completes the promise with
+    a user-cancelled error. Spike first: does Finder accept a write to a URL other than the one it promised?
 - test: `ConflictPlannerTests` (fake listing, scripted answers):
   - no clash → no question;
   - file Replace / Keep Both / Skip;

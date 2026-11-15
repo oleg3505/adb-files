@@ -11,6 +11,7 @@ final class FilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate, Sendab
     private let file: RemoteFile
     private let serial: String
     private let enqueue: @Sendable (TransferRequest, @escaping @Sendable (TransferItem.State) -> Void) -> Void
+    private let askConflict: @Sendable (ConflictQuestion) async -> ConflictAnswer
     private let queue: OperationQueue = {
         let queue = OperationQueue()
         queue.qualityOfService = .userInitiated
@@ -19,11 +20,13 @@ final class FilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate, Sendab
 
     init(
         file: RemoteFile, serial: String,
-        enqueue: @escaping @Sendable (TransferRequest, @escaping @Sendable (TransferItem.State) -> Void) -> Void
+        enqueue: @escaping @Sendable (TransferRequest, @escaping @Sendable (TransferItem.State) -> Void) -> Void,
+        askConflict: @escaping @Sendable (ConflictQuestion) async -> ConflictAnswer = { await ConflictPrompt.ask($0) }
     ) {
         self.file = file
         self.serial = serial
         self.enqueue = enqueue
+        self.askConflict = askConflict
     }
 
     /// A provider for this file, retaining its delegate (NSFilePromiseProvider holds the delegate weakly).
@@ -46,13 +49,42 @@ final class FilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate, Sendab
         _ filePromiseProvider: NSFilePromiseProvider, writePromiseTo url: URL, completionHandler: @escaping (Error?) -> Void
     ) {
         Logger.transfer.info("promise write url=\(url.path, privacy: .public)")
-        // Write exactly where Finder asks: it already picked a unique name (e.g. "name 2.ext").
-        let request = TransferRequest(
-            direction: .download, serial: serial, sourcePath: file.path, isFolder: file.isDirectory,
-            targetFolder: url.deletingLastPathComponent().path, size: file.size, modificationDate: file.modificationDate,
-            fixedName: url.lastPathComponent
-        )
         let done = CompletionBox(completionHandler)
+        let folder = url.deletingLastPathComponent()
+        // Finder renames silently ("name 2.ext") when the name is taken; ask like an upload would.
+        let clash = url.lastPathComponent != file.name
+            && FileManager.default.fileExists(atPath: folder.appendingPathComponent(file.name).path)
+        guard clash else {
+            start(name: url.lastPathComponent, in: folder, conflict: .keepBoth, done: done)
+            return
+        }
+        let question = ConflictQuestion(
+            name: file.name, isFolder: file.isDirectory, destination: folder.lastPathComponent, remaining: 1, direction: .download
+        )
+        let ask = askConflict
+        Task {
+            let answer = await ask(question)
+            Logger.transfer.info(
+                "conflict ask name=\(question.name, privacy: .public) choice=\(answer.choice?.rawValue ?? "stop", privacy: .public) via=promise"
+            )
+            switch answer.choice {
+            case .replace where !question.isFolder:
+                self.start(name: question.name, in: folder, conflict: .replace, done: done)
+            case .keepBoth, .replace:
+                self.start(name: url.lastPathComponent, in: folder, conflict: .keepBoth, done: done)
+            case .skip, nil:
+                done.call(CocoaError(.userCancelled))
+            }
+        }
+    }
+
+    /// Downloads into `folder/name` (Finder's chosen name, or the original one when replacing).
+    private func start(name fixedName: String, in folder: URL, conflict: ConflictChoice, done: CompletionBox) {
+        var request = TransferRequest(
+            direction: .download, serial: serial, sourcePath: file.path, isFolder: file.isDirectory,
+            targetFolder: folder.path, size: file.size, modificationDate: file.modificationDate, fixedName: fixedName
+        )
+        request.conflict = conflict
         let name = file.name
         // Finder waits for the completion handler, which runs when the transfer ends.
         enqueue(request) { state in

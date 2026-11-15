@@ -20,6 +20,9 @@
   spike breaks dragging again, the hint is **dropped from M7**.
 - Wi-Fi debugging is verified live by the user (Wireless debugging on the phone, same Wi-Fi).
 - Device writes only in `/sdcard/Download/AdbFilesTest/`, removed afterwards.
+- Drag to Finder also asks on a name clash (user, 2026-11-15, during R3 verification): Finder renames silently, so
+  the promise delegate detects that the original name exists and asks Replace / Keep Both / Skip. A spike decides
+  whether Finder accepts the Replace write; if not, the user is told and Finder's behaviour stays.
 - Listing timeout rule changes from 10 s total to 10 s of inactivity (user, 2026-11-15) → ADR-002, CLAUDE.md updated.
 - Multi-selection: first without table-subclass changes; if that fails, overriding only `canDragRows(with:at:)` on
   the table is allowed (user, 2026-11-15).
@@ -60,8 +63,7 @@
   - user-editable bookmarks;
   - Merge for folder conflicts;
   - a cache-size setting;
-  - the File Provider extension (M8);
-  - drag-to-Finder conflicts, which Finder handles.
+  - the File Provider extension (M8).
 
 ## Acceptance criteria
 - [ ] AC1 `DCIM/Camera` (7,948 entries) opens while two 1 GB uploads run. A device that sends nothing for 10 s still
