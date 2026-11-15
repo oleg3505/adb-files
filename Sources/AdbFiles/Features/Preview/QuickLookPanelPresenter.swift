@@ -25,6 +25,9 @@ final class QuickLookPanelPresenter: NSObject, PreviewPresenting {
     /// Space pressed while the panel is key.
     var onToggle: () -> Void = {}
     private var isControlling = false
+    /// Set while this presenter wants the panel up; the table accepts panel control only then, so another window's
+    /// table never takes the panel with leftover items.
+    private(set) var wantsPanel = false
 
     var isVisible: Bool {
         QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible && isControlling
@@ -32,7 +35,14 @@ final class QuickLookPanelPresenter: NSObject, PreviewPresenting {
 
     func show(_ urls: [URL]) {
         items = urls.map(PreviewItem.init(url:))
+        wantsPanel = true
         guard let panel = QLPreviewPanel.shared() else { return }
+        // The panel finds its controller through the responder chain: make sure it starts at our table (the
+        // context menu can be used while focus is elsewhere).
+        if let table, table.window?.firstResponder !== table {
+            table.window?.makeFirstResponder(table)
+        }
+        if !isControlling { panel.updateController() }
         if isControlling {
             panel.reloadData()
             panel.currentPreviewItemIndex = 0
@@ -43,8 +53,10 @@ final class QuickLookPanelPresenter: NSObject, PreviewPresenting {
     }
 
     func close() {
+        wantsPanel = false
         guard isControlling, let panel = QLPreviewPanel.shared() else { return }
         panel.orderOut(nil)
+        detach(from: panel)
     }
 
     // MARK: Called by the table (QLPreviewPanelController)
@@ -57,10 +69,18 @@ final class QuickLookPanelPresenter: NSObject, PreviewPresenting {
     }
 
     func end(_ panel: QLPreviewPanel) {
-        isControlling = false
-        panel.dataSource = nil
-        panel.delegate = nil
+        guard isControlling else { return }
+        detach(from: panel)
+        items = []
+        wantsPanel = false
         onClose()
+    }
+
+    /// The panel holds its data source and delegate unretained: never leave it pointing at us.
+    private func detach(from panel: QLPreviewPanel) {
+        isControlling = false
+        if (panel.dataSource as AnyObject?) === self { panel.dataSource = nil }
+        if (panel.delegate as AnyObject?) === self { panel.delegate = nil }
     }
 }
 

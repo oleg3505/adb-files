@@ -75,6 +75,43 @@ folder was removed afterwards (`ls` → "No such file or directory").
 - Per-browser cancellation unbinds only that browser's requests (per-waiter cancel), not `cancelAll`. Another
   window may show the same device. `cancelAll` runs when the device leaves.
 
+### Self-review
+`code-reviewer` on `main..HEAD`: 1 blocking, 4 should-fix, 3 nits. The blocking finding and all four should-fix
+findings are fixed; tests 247 → 252.
+- **Blocking**: a result queued for the next batch could land on a cell reused in between, e.g. a photo on a folder
+  row. Batches now re-check the cell's path, and rebinding or unbinding drops the cell's queued results.
+  - Tests: `resultQueuedForABatchIsDroppedWhenTheCellIsReusedBeforeTheBatch`, `batchRechecksThePathWhenApplied`.
+  - Mutation check: removing both checks fails both tests.
+- Quick Look panel wiring:
+  - The panel keeps its data source unretained; the table now clears it in `endPreviewPanelControl` even when the
+    presenter is already gone.
+  - A table accepts the panel only while its presenter wants it, so a second window never shows leftover items.
+  - Items are cleared on end.
+  - Quick Look from the context menu first makes the table first responder.
+- Thumbnail cancellation was keyed by file and sent in a separate task, so it could be lost or hit the wrong
+  request. It is now per waiter and per generation via `withTaskCancellationHandler`, and an already-cancelled
+  caller starts no read.
+  - Tests: `oneWaiterWithdrawingKeepsTheSharedReadForTheOther`, `alreadyCancelledCallerStartsNoRead`.
+- Files with no thumbnail are remembered in memory by key, so a broken JPEG is not re-read on every scroll
+  (`fileWithoutAThumbnailIsNotReadAgain`).
+- Nits not changed, candidates for M7:
+  - each thumbnail read opens a fresh interactive connection;
+  - a file of exactly `maxBytes` drops a good connection;
+  - nothing limits the thumbnail cache size.
+- Executed after the fixes (user, read-only): fast scrolling in Large rows → 255 thumbnails, 10 `thumb cancel`, max
+  `apply thumbs … mainMs=1.75`; Space + ↓ + Esc; Quick Look from the context menu with focus in the sidebar; ⌘W with
+  the panel open → no crash, no diagnostic report.
+
+### Environment observation (again, as in ADB-5)
+- At 22:55–23:10 the same `NWError 48 EADDRINUSE` returned in the parallel suite. It hit 3–4 fake-server tests that
+  reconnect after closing a connection (`readPrefixReturnsExactly…`, `cancelAtGateLeavesNoFiles`,
+  `folderDownloadContinues…`, `closedPortIsServerNotRunning`).
+- It happened on the committed HEAD without the review fixes too, which had passed 20/20 at 22:45.
+- The same tests pass alone, and the whole suite passes with `--no-parallel` (252/252). `AdbFilesTests` passed
+  5/5.
+- The review fixes touch only app code. Not investigated further in ADB-6.
+- After the fix commit the episode had ended: the parallel suite passed 10/10 (252 tests).
+
 ### Deferred to M7 (user decision, 2026-11-14)
 - **Listing timeout under transfer load**: the 10 s *total* listing timeout made `DCIM/Camera` fail 4× during two
   1 GB uploads (an earlier run under the same load took 7.5 s). Proposed fix: a 10 s inactivity timeout.

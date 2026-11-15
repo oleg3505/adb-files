@@ -174,13 +174,54 @@ struct ThumbnailServiceTests {
         let service = ThumbnailService(serial: "S", source: source, cacheRoot: root)
         let request = Task { await service.thumbnail(for: file) }
         while source.readLog.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
-        await service.cancel(file)
+        request.cancel() // the only waiter withdraws → the read is cancelled
+        try await Task.sleep(for: .milliseconds(30))
         await gate.open()
         #expect(await request.value == nil, "a cancelled request yields nothing")
         let cached = (try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("S").path)) ?? []
         #expect(cached.isEmpty, "nothing written for a cancelled request")
         #expect(await service.thumbnail(for: file) != nil, "a later request generates it")
         #expect(source.readLog.count == 2)
+    }
+
+    @Test func oneWaiterWithdrawingKeepsTheSharedReadForTheOther() async throws {
+        let gate = Gate()
+        let file = remote("a.jpg", size: UInt64(Self.withThumb.count))
+        let source = FakeThumbSource([file.path: Self.withThumb], gate: gate)
+        let service = ThumbnailService(serial: "S", source: source, cacheRoot: tempRoot())
+        let first = Task { await service.thumbnail(for: file) }
+        let second = Task { await service.thumbnail(for: file) }
+        while source.readLog.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        try await Task.sleep(for: .milliseconds(30))
+        first.cancel()
+        try await Task.sleep(for: .milliseconds(30))
+        await gate.open()
+        #expect(await second.value != nil, "the remaining waiter still gets the thumbnail")
+        #expect(source.readLog.count == 1)
+    }
+
+    @Test func alreadyCancelledCallerStartsNoRead() async throws {
+        let file = remote("a.jpg", size: UInt64(Self.withThumb.count))
+        let source = FakeThumbSource([file.path: Self.withThumb])
+        let service = ThumbnailService(serial: "S", source: source, cacheRoot: tempRoot())
+        let request = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await service.thumbnail(for: file)
+        }
+        #expect(await request.value == nil)
+        #expect(source.readLog.isEmpty, "a cancel that arrives first is not lost")
+    }
+
+    @Test func fileWithoutAThumbnailIsNotReadAgain() async throws {
+        let file = remote("broken.jpg", size: 100)
+        let source = FakeThumbSource([file.path: Data(repeating: 7, count: 100)])
+        let service = ThumbnailService(serial: "S", source: source, cacheRoot: tempRoot())
+        #expect(await service.thumbnail(for: file) == nil)
+        #expect(await service.thumbnail(for: file) == nil)
+        #expect(source.readLog.count == 2, "prefix + full read once, then remembered")
+        let changed = remote("broken.jpg", size: 100, mtime: 1)
+        _ = await service.thumbnail(for: changed)
+        #expect(source.readLog.count == 4, "a changed file is retried")
     }
 
     @Test func cancelAllStopsPendingReads() async throws {

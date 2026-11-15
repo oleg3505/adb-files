@@ -208,10 +208,7 @@ struct BrowserView: View {
         newPresenter.onClose = { [weak newPreview] in newPreview?.panelDidClose() }
         newPresenter.onToggle = { [weak newPreview] in newPreview?.close() }
         let service = services.thumbnails(for: serial)
-        let binder = ThumbnailBinder(
-            load: { await service.thumbnail(for: $0) },
-            cancel: { file in Task { await service.cancel(file) } }
-        )
+        let binder = ThumbnailBinder { await service.thumbnail(for: $0) }
         thumbnails = binder
         presenter = newPresenter
         preview = newPreview

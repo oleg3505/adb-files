@@ -527,21 +527,32 @@ final class FileNSTableView: NSTableView {
 
     // QLPreviewPanelController (an informal protocol; AppKit calls these on the main thread).
 
+    /// Whether this table handed the panel to its presenter (cleared in `end`).
+    private var controlsPanel = false
+
     override nonisolated func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
-        MainActor.assumeIsolated { preview != nil }
+        MainActor.assumeIsolated { preview?.wantsPanel == true }
     }
 
     override nonisolated func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
         MainActor.assumeIsolated {
-            guard let panel else { return }
-            preview?.begin(panel)
+            guard let panel, let preview else { return }
+            controlsPanel = true
+            preview.begin(panel)
         }
     }
 
     override nonisolated func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
         MainActor.assumeIsolated {
-            guard let panel else { return }
-            preview?.end(panel)
+            guard let panel, controlsPanel else { return }
+            controlsPanel = false
+            if let preview {
+                preview.end(panel)
+            } else {
+                // The presenter is already gone (browser torn down): the panel must not keep dangling pointers.
+                panel.dataSource = nil
+                panel.delegate = nil
+            }
         }
     }
 }

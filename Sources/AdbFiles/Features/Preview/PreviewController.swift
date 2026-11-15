@@ -82,11 +82,11 @@ final class PreviewController {
         Logger.ui.info("preview close")
     }
 
-    /// The browser is going away (device gone or switched): stop quietly.
+    /// The browser is going away (device gone or switched): stop quietly and let go of the panel.
     func cancel() {
         isActive = false
         cancelPending()
-        if presenter.isVisible { presenter.close() }
+        presenter.close()
     }
 
     // MARK: - Requests

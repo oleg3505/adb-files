@@ -8,8 +8,9 @@ import UniformTypeIdentifiers
 /// Thumbnails for one device: memory and disk cache, device reads one at a time (the interactive connection),
 /// at most `maxDecodes` decodes at once, duplicate requests sharing one task.
 ///
-/// A request that every caller cancelled is dropped: its result is never cached (not even as "no thumbnail")
-/// and never reported as an error.
+/// Cancelling the caller's task withdraws that caller; a request that every caller withdrew is cancelled and its
+/// result is never cached (not even as "no thumbnail") and never reported as an error. A finished request with no
+/// thumbnail is remembered in memory (by key, so a changed file is retried), so broken files aren't re-read.
 actor ThumbnailService {
     static let pixelSize = 160
 
@@ -25,6 +26,8 @@ actor ThumbnailService {
     private var memoryOrder: [String] = []
     private let memoryLimit = 600
     private var inflight: [String: (id: UUID, task: Task<Data?, Never>, waiters: Int)] = [:]
+    /// Keys of files that turned out to have no thumbnail (memory only).
+    private var missing: Set<String> = []
 
     /// - Parameter decoder: Turns bytes into thumbnail PNG data; injectable for tests.
     init(
@@ -53,9 +56,11 @@ actor ThumbnailService {
 
     /// PNG data of the thumbnail, or nil when the file has none (or the request was cancelled).
     func thumbnail(for file: RemoteFile) async -> Data? {
+        guard !Task.isCancelled else { return nil }
         let strategy = ThumbnailStrategy.choose(for: file)
         guard strategy != .none else { return nil }
         let key = Self.key(for: file)
+        if missing.contains(key) { return nil }
         if let cached = memory[key] {
             Logger.ui.debug("thumb source=memory path=\(file.path, privacy: .public)")
             return cached
@@ -66,25 +71,33 @@ actor ThumbnailService {
             Logger.ui.info("thumb source=disk path=\(file.path, privacy: .public)")
             return data
         }
+        let id: UUID
+        let task: Task<Data?, Never>
         if let existing = inflight[key] {
             inflight[key]?.waiters += 1
-            return await existing.task.value
+            (id, task) = (existing.id, existing.task)
+        } else {
+            id = UUID()
+            task = Task { await self.generate(file, strategy: strategy, key: key, id: id, diskURL: diskURL) }
+            inflight[key] = (id, task, 1)
         }
-        let id = UUID()
-        let task = Task { await self.generate(file, strategy: strategy, key: key, id: id, diskURL: diskURL) }
-        inflight[key] = (id, task, 1)
-        return await task.value
+        // Like an AbortController per caller: cancelling the caller's task withdraws exactly this waiter from
+        // exactly this generation, whatever order the hops arrive in.
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { await self.withdraw(key: key, id: id, path: file.path) }
+        }
     }
 
-    /// The caller no longer needs the thumbnail of `file`; the read is cancelled when nobody else waits for it.
-    func cancel(_ file: RemoteFile) {
-        let key = Self.key(for: file)
-        guard var entry = inflight[key] else { return }
+    /// One waiter of generation `id` is gone; the read is cancelled when nobody else waits for it.
+    private func withdraw(key: String, id: UUID, path: String) {
+        guard var entry = inflight[key], entry.id == id else { return } // already finished or replaced
         entry.waiters -= 1
         if entry.waiters <= 0 {
             entry.task.cancel()
             inflight[key] = nil
-            Logger.ui.info("thumb cancel path=\(file.path, privacy: .public)")
+            Logger.ui.info("thumb cancel path=\(path, privacy: .public)")
         } else {
             inflight[key] = entry
         }
@@ -129,7 +142,10 @@ actor ThumbnailService {
             }
             try Task.checkCancellation()
             finish(key, id)
-            guard let png else { return nil }
+            guard let png else {
+                missing.insert(key)
+                return nil
+            }
             remember(key, png)
             write(png, to: diskURL)
             Logger.ui.info(

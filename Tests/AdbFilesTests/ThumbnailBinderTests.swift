@@ -1,6 +1,7 @@
 import AdbKit
 import AppKit
 import Foundation
+import os
 import Testing
 @testable import AdbFiles
 
@@ -15,12 +16,21 @@ final class FakeCell: ThumbnailTarget {
 @MainActor
 final class ManualLoads {
     var requested: [String] = []
-    var cancelled: [String] = []
+    private let cancelLog = OSAllocatedUnfairLock(initialState: [String]())
     private var waiting: [String: [CheckedContinuation<Data?, Never>]] = [:]
+
+    /// Paths whose awaiting task was cancelled.
+    var cancelled: [String] { cancelLog.withLock { $0 } }
 
     func load(_ file: RemoteFile) async -> Data? {
         requested.append(file.path)
-        return await withCheckedContinuation { waiting[file.path, default: []].append($0) }
+        let log = cancelLog
+        let path = file.path
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { waiting[file.path, default: []].append($0) }
+        } onCancel: {
+            log.withLock { $0.append(path) }
+        }
     }
 
     func complete(_ path: String, with data: Data?) {
@@ -51,7 +61,7 @@ private let png: Data = {
 
     init() {
         let loads = self.loads
-        binder = ThumbnailBinder(load: { await loads.load($0) }, cancel: { loads.cancelled.append($0.path) })
+        binder = ThumbnailBinder { await loads.load($0) }
     }
 
     private func show(_ cell: FakeCell, _ file: RemoteFile) {
@@ -72,7 +82,7 @@ private let png: Data = {
         show(cell, photo("a.jpg"))
         try await waitUntil { loads.isWaiting("/sdcard/DCIM/a.jpg") }
         show(cell, photo("b.jpg")) // the cell is reused for another row
-        #expect(loads.cancelled == ["/sdcard/DCIM/a.jpg"])
+        try await waitUntil { loads.cancelled == ["/sdcard/DCIM/a.jpg"] }
         loads.complete("/sdcard/DCIM/a.jpg", with: png) // late result for the old row
         try await waitUntil { binder.dropped == 1 }
         #expect(cell.images.isEmpty, "never shows another file's thumbnail")
@@ -86,8 +96,8 @@ private let png: Data = {
         show(cell, photo("a.jpg"))
         binder.unbind(cell)
         cell.shownPath = nil
-        #expect(loads.cancelled == ["/sdcard/DCIM/a.jpg"])
-        try await waitUntil { loads.isWaiting("/sdcard/DCIM/a.jpg") || binder.dropped == 1 }
+        try await waitUntil { loads.cancelled == ["/sdcard/DCIM/a.jpg"] }
+        try await waitUntil { loads.isWaiting("/sdcard/DCIM/a.jpg") }
         loads.complete("/sdcard/DCIM/a.jpg", with: png)
         try await Task.sleep(for: .milliseconds(30))
         #expect(cell.images.isEmpty)
@@ -101,6 +111,32 @@ private let png: Data = {
         loads.complete("/sdcard/DCIM/a.jpg", with: png)
         try await waitUntil { binder.dropped == 1 }
         #expect(cell.images.isEmpty)
+    }
+
+    @Test func resultQueuedForABatchIsDroppedWhenTheCellIsReusedBeforeTheBatch() async throws {
+        binder.autoFlush = false
+        let cell = FakeCell()
+        show(cell, photo("a.jpg"))
+        try await waitUntil { loads.isWaiting("/sdcard/DCIM/a.jpg") }
+        loads.complete("/sdcard/DCIM/a.jpg", with: png)
+        try await waitUntil { binder.pendingCount == 1 } // arrived and checked, not yet applied
+        // Reused for a folder row (no thumbnail of its own, so nothing would ever replace a wrong image).
+        show(cell, RemoteFile(name: "Camera", path: "/sdcard/DCIM/Camera", mode: 0o040770, size: 0, modificationDate: nil))
+        binder.flush()
+        #expect(cell.images.isEmpty)
+    }
+
+    @Test func batchRechecksThePathWhenApplied() async throws {
+        binder.autoFlush = false
+        let cell = FakeCell()
+        show(cell, photo("a.jpg"))
+        try await waitUntil { loads.isWaiting("/sdcard/DCIM/a.jpg") }
+        loads.complete("/sdcard/DCIM/a.jpg", with: png)
+        try await waitUntil { binder.pendingCount == 1 }
+        cell.shownPath = "/sdcard/DCIM/b.jpg" // reused without a bind yet
+        binder.flush()
+        #expect(cell.images.isEmpty)
+        #expect(binder.dropped == 1)
     }
 
     @Test func filesWithoutThumbnailsAreNotRequested() {
@@ -127,7 +163,7 @@ private let png: Data = {
         let cells = [FakeCell(), FakeCell(), FakeCell()]
         for (index, cell) in cells.enumerated() { show(cell, photo("\(index).jpg")) }
         binder.unbindAll()
-        #expect(Set(loads.cancelled) == ["/sdcard/DCIM/0.jpg", "/sdcard/DCIM/1.jpg", "/sdcard/DCIM/2.jpg"])
+        try await waitUntil { Set(loads.cancelled) == ["/sdcard/DCIM/0.jpg", "/sdcard/DCIM/1.jpg", "/sdcard/DCIM/2.jpg"] }
         try await waitUntil { loads.requested.count == 3 }
         for index in 0..<3 { loads.complete("/sdcard/DCIM/\(index).jpg", with: png) }
         try await Task.sleep(for: .milliseconds(30))
