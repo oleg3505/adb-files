@@ -20,4 +20,18 @@ struct LiveServerTests {
         let tracked = try #require(try await iterator.next())
         #expect(Set(listed.map(\.serial)) == Set(tracked.map(\.serial)))
     }
+
+    @Test func connectAndDisconnectReportAdbsMessages() async throws {
+        // Port 1 is never listening: adb answers OKAY + a failure text, which must surface as an error.
+        let client = AdbHostClient()
+        await #expect(throws: AdbError.self) { try await client.connect(address: "127.0.0.1:1") }
+        do {
+            _ = try await client.connect(address: "127.0.0.1:1")
+        } catch AdbError.serverFailure(let message) {
+            #expect(message.contains("failed to connect"))
+        }
+        await #expect(throws: AdbError.serverFailure("no such device '127.0.0.1:1'")) {
+            try await client.disconnect(address: "127.0.0.1:1")
+        }
+    }
 }

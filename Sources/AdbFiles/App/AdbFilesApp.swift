@@ -29,5 +29,9 @@ struct AdbFilesApp: App {
             TransferCommands(services: services)
             FileCommands()
         }
+        Window("Connect via Wi-Fi", id: WifiConnectView.windowID) {
+            WifiConnectView()
+        }
+        .windowResizability(.contentSize)
     }
 }

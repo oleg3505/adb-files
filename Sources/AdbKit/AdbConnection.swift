@@ -56,6 +56,17 @@ public actor AdbConnection {
         }
     }
 
+    /// Reads a second status after `request` (services such as `host:pair` answer `OKAY` first, then the result).
+    /// - Throws: `AdbError.serverFailure` with the server's message on `FAIL`.
+    public func expectOkay(timeout: Duration? = .seconds(10)) async throws {
+        try await withTimeout(timeout) {
+            switch try await self.readStatus() {
+            case .okay: return
+            case .fail(let message): throw AdbError.serverFailure(message)
+            }
+        }
+    }
+
     /// Reads one payload prefixed by a 4-hex-digit length. Pass `nil` to wait without a time limit.
     public func readLengthPrefixed(timeout: Duration? = .seconds(10)) async throws -> Data {
         try await withTimeout(timeout) { try await self.readLengthPrefixedUnbounded() }

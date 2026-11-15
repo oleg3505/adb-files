@@ -36,6 +36,66 @@ struct AdbHostClientTests {
         #expect(try await server.client().version() == 41)
     }
 
+    // Replies below were recorded from adb 37.0.0 (protocol 41) on 2026-11-15.
+
+    @Test func pairSendsCodeAndAddressAndReturnsTheSuccessMessage() async throws {
+        let server = try await FakeAdbServer.start { client in
+            #expect(try await client.readRequest() == "host:pair:123456:192.168.1.20:37099")
+            try await client.write("OKAY")
+            try await client.write("OKAY")
+            try await client.writeFramed("Successfully paired to 192.168.1.20:37099 [guid=adb-9A251FFAZ0073G-abc]")
+        }
+        defer { server.stop() }
+        let message = try await server.client().pair(address: "192.168.1.20:37099", code: "123456")
+        #expect(message.hasPrefix("Successfully paired to 192.168.1.20:37099"))
+    }
+
+    @Test func pairFailureCarriesAdbsReason() async throws {
+        let server = try await FakeAdbServer.start { client in
+            _ = try await client.readRequest()
+            try await client.write("OKAYFAIL0027Failed: Unable to start pairing client.")
+        }
+        defer { server.stop() }
+        await #expect(throws: AdbError.serverFailure("Failed: Unable to start pairing client.")) {
+            try await server.client().pair(address: "127.0.0.1:1", code: "123456")
+        }
+    }
+
+    @Test func connectSucceedsOnConnectedOrAlreadyConnected() async throws {
+        for reply in ["connected to 192.168.1.20:41234", "already connected to 192.168.1.20:41234"] {
+            let server = try await FakeAdbServer.start { client in
+                #expect(try await client.readRequest() == "host:connect:192.168.1.20:41234")
+                try await client.write("OKAY")
+                try await client.writeFramed(reply)
+            }
+            defer { server.stop() }
+            #expect(try await server.client().connect(address: "192.168.1.20:41234") == reply)
+        }
+    }
+
+    @Test func connectFailureIsAnOkayWithAnErrorMessage() async throws {
+        let server = try await FakeAdbServer.start { client in
+            _ = try await client.readRequest()
+            try await client.write("OKAY")
+            try await client.writeFramed("failed to connect to '127.0.0.1:1': Connection refused")
+        }
+        defer { server.stop() }
+        await #expect(throws: AdbError.serverFailure("failed to connect to '127.0.0.1:1': Connection refused")) {
+            try await server.client().connect(address: "127.0.0.1:1")
+        }
+    }
+
+    @Test func disconnectUnknownDeviceFails() async throws {
+        let server = try await FakeAdbServer.start { client in
+            #expect(try await client.readRequest() == "host:disconnect:127.0.0.1:1")
+            try await client.write("FAIL001cno such device '127.0.0.1:1'")
+        }
+        defer { server.stop() }
+        await #expect(throws: AdbError.serverFailure("no such device '127.0.0.1:1'")) {
+            try await server.client().disconnect(address: "127.0.0.1:1")
+        }
+    }
+
     @Test func failBecomesServerFailure() async throws {
         let server = try await FakeAdbServer.start { client in
             _ = try await client.readRequest()

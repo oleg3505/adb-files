@@ -1,4 +1,5 @@
 import AdbKit
+import os
 import SwiftUI
 
 /// Sidebar listing connected devices, then the fixed Locations of the selected device.
@@ -16,7 +17,13 @@ struct DeviceSidebarView: View {
                         .selectionDisabled()
                 } else {
                     ForEach(store.devices) { device in
-                        DeviceRow(device: device).tag(device.serial)
+                        DeviceRow(device: device)
+                            .tag(device.serial)
+                            .contextMenu {
+                                if WifiConnectModel.isNetworkSerial(device.serial) {
+                                    Button("Disconnect") { disconnect(device.serial) }
+                                }
+                            }
                     }
                 }
             }
@@ -39,6 +46,17 @@ struct DeviceSidebarView: View {
         }
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(min: 180, ideal: 220)
+    }
+
+    private func disconnect(_ serial: String) {
+        Task {
+            do {
+                let message = try await AdbHostClient().disconnect(address: serial)
+                Logger.ui.info("wifi disconnect serial=\(serial, privacy: .public): \(message, privacy: .public)")
+            } catch {
+                Logger.ui.error("wifi disconnect failed serial=\(serial, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     private var selection: Binding<String?> {

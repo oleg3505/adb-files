@@ -80,10 +80,48 @@ public struct AdbHostClient: Sendable {
         }
     }
 
-    private func oneShot(_ service: String) async throws -> Data {
+    // MARK: - Wireless debugging (Android 11+)
+
+    /// Pairs with a phone in Developer options › Wireless debugging › Pair device with pairing code
+    /// (`host:pair:<code>:<host:port>`). The server answers `OKAY`, then `OKAY` + "Successfully paired to …" or
+    /// `FAIL` + the reason (verified against adb 37 / protocol 41).
+    /// - Parameters:
+    ///   - address: The pairing `host:port` shown on the phone (not the connect port).
+    ///   - code: The 6-digit pairing code.
+    /// - Returns: The server's success message.
+    /// - Throws: `AdbError.serverFailure` with adb's message (wrong code, phone not in pairing mode).
+    public func pair(address: String, code: String, timeout: Duration = .seconds(45)) async throws -> String {
         let connection = try await AdbConnection.connect(host: host, port: port, timeout: connectTimeout)
         defer { Task { await connection.close() } }
-        try await connection.request(service, timeout: requestTimeout)
-        return try await connection.readLengthPrefixed(timeout: requestTimeout)
+        try await connection.request("host:pair:\(code):\(address)", timeout: requestTimeout)
+        try await connection.expectOkay(timeout: timeout)
+        let message = String(decoding: try await connection.readLengthPrefixed(timeout: requestTimeout), as: UTF8.self)
+        guard message.hasPrefix("Successfully paired") else { throw AdbError.serverFailure(message) }
+        return message
+    }
+
+    /// Connects to a phone over the network (`host:connect:<host:port>`; port 5555 when omitted). adb answers
+    /// `OKAY` even when it fails, so the message decides: "connected to …" / "already connected to …" succeed.
+    /// - Returns: The server's message.
+    /// - Throws: `AdbError.serverFailure` with adb's message, e.g. "failed to connect to '…': Connection refused".
+    public func connect(address: String, timeout: Duration = .seconds(30)) async throws -> String {
+        let message = String(decoding: try await oneShot("host:connect:\(address)", timeout: timeout), as: UTF8.self)
+        guard message.hasPrefix("connected to") || message.hasPrefix("already connected to") else {
+            throw AdbError.serverFailure(message)
+        }
+        return message
+    }
+
+    /// Disconnects a network device (`host:disconnect:<host:port>`).
+    /// - Throws: `AdbError.serverFailure` such as "no such device '…'".
+    public func disconnect(address: String) async throws -> String {
+        String(decoding: try await oneShot("host:disconnect:\(address)"), as: UTF8.self)
+    }
+
+    private func oneShot(_ service: String, timeout: Duration? = nil) async throws -> Data {
+        let connection = try await AdbConnection.connect(host: host, port: port, timeout: connectTimeout)
+        defer { Task { await connection.close() } }
+        try await connection.request(service, timeout: timeout ?? requestTimeout)
+        return try await connection.readLengthPrefixed(timeout: timeout ?? requestTimeout)
     }
 }
